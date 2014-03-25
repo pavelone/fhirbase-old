@@ -114,7 +114,7 @@ There are two base tables:
 * resource_component − base table for all __value objects__ (resource components)
 
 Each resource is represented as a __root entity__ table (for example 'patient')
-and a table for component (for example: patient.contact is stored in `patient_contact` table).
+and a table per component (for example: patient.contact is stored in `patient_contact` table).
 
 This point is illustrated in the picture below:
 
