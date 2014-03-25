@@ -114,7 +114,7 @@ There are two base tables:
 * resource_component − base table for all __value objects__ (resource components)
 
 Each resource is represented as a __root entity__ table (for example 'patient')
-and table per component (for example: patient.contact is stored in `patient_contact` table).
+and a table for component (for example: patient.contact is stored in `patient_contact` table).
 
 This point is illustrated in the picture below:
 
@@ -289,7 +289,7 @@ and reference traversing.
 
 TODO: we are working on a solution
 
-### views
+### Views
 
 Relational schema is perfect for querying.
 
@@ -307,12 +307,12 @@ SELECT p.*
 
 ```
 
-But after searching we want to get a resource as whole
+But after searching we want to get the resource entirely
 (i.e. collect resource aggregate from relational tables).
 
 To simplify this, we generate views with names view_<resource_name>
 which return FHIR compliant json resource representation. So, to
-accomplish query we can replace __patient__ table with __view_patient__ view
+accomplish the query we can replace __patient__ table with __view_patient__ view
 and get resource json in one hop.
 
 
@@ -337,7 +337,7 @@ into right relations and return new resource id (uuid).
 
 ### delete_resource(id uuid)
 
-There are also procedures to delete resource
+There are also procedures to delete resources
 
 ### update_resource(resource json)
 
