@@ -25,9 +25,9 @@ SELECT
     THEN
      fhir.eval_template($SQL$
        _{{table_name}}  AS (
-         SELECT uuid as resource_id, uuid, path, _container_id as container_id, null::uuid as parent_id, value
+         SELECT uuid as _resource_id, uuid, version_id, path, _container_id as container_id, null::uuid as _parent_id, value
             FROM (
-              SELECT coalesce(_resource_id, uuid_generate_v4()) as uuid , ARRAY['{{resource}}'] as path, _data as value
+              SELECT coalesce(_resource_id, uuid_generate_v4()) as uuid , uuid_generate_v4() as version_id, ARRAY['{{resource}}'] as path, _data as value
          ) _
       )
      $SQL$,
@@ -37,11 +37,15 @@ SELECT
       fhir.eval_template($SQL$
          _{{table_name}}  AS (
            SELECT
-             p.resource_id as resource_id,
+             p._resource_id as _resource_id,
              uuid_generate_v4() as uuid,
+             uuid_generate_v4() as version_id,
              {{path}}::text[] as path,
              null::uuid as container_id,
-             p.uuid as parent_id,
+             case
+               when array_length(path, 1) = 2 then p.version_id
+               else p.uuid
+             end as _parent_id,
              {{value}} as value
            FROM _{{parent_table}} p
            WHERE p.value IS NOT NULL
@@ -64,7 +68,7 @@ SELECT
   fhir.eval_template($SQL$
      --DROP FUNCTION IF EXISTS fhir.insert_{{fn_name}}(json, uuid);
      CREATE OR REPLACE FUNCTION fhir.insert_{{fn_name}}(_data json, _container_id uuid default null, _resource_id uuid default null)
-     RETURNS TABLE(resource_id uuid, id uuid, path text[], container_id uuid, parent_id uuid, value json) AS
+     RETURNS TABLE(_resource_id uuid, id uuid, _version_id uuid, path text[], container_id uuid, _parent_id uuid, value json) AS
      $fn$
         WITH {{ctes}}
         {{selects}};
@@ -98,8 +102,8 @@ SELECT 'create insert functions...', count(*)  FROM (
 
 
 CREATE OR REPLACE FUNCTION
-fhir.insert_resource(_resource json, _container_id uuid default null, _resource_id uuid default null)
-RETURNS uuid AS
+fhir.insert_resource(_resource JSON, _container_id UUID DEFAULT NULL, _resource_id UUID DEFAULT NULL)
+RETURNS UUID AS
 $BODY$
   DECLARE
     uuid_ uuid;
@@ -107,10 +111,10 @@ $BODY$
     sql text;
   BEGIN
      EXECUTE fhir.eval_template($SQL$
-        SELECT DISTINCT resource_id FROM
+        SELECT DISTINCT _resource_id FROM
         (
-          SELECT resource_id,
-                 meta.eval_insert(build_insert_statment( fhir.table_name(path)::text, value, id::text, parent_id::text, resource_id::text, container_id::text ))
+          SELECT _resource_id,
+                 meta.eval_insert(build_insert_statment( fhir.table_name(path)::text, value, id::text, _parent_id::text, _resource_id::text, container_id::text ))
           FROM fhir.insert_{{resource}}($1, $2, $3)
           WHERE value IS NOT NULL
           ORDER BY path

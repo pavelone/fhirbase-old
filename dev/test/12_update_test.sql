@@ -16,7 +16,7 @@ SELECT is(COUNT(*)::integer, 1, 'patient was inserted')
 
 SELECT is(
        (SELECT text::varchar
-       FROM fhir.patient_name WHERE resource_id = :'resource_id'),
+       FROM fhir.patient_name WHERE _resource_id = :'resource_id'),
        'Roel'::varchar,
        'patient data was placed in correct tables');
 
@@ -24,7 +24,7 @@ SELECT fhir.update_resource(:'resource_id', :'new_pt_json'::json);
 
 SELECT is(
        (SELECT text::varchar
-       FROM fhir.patient_name WHERE resource_id = :'resource_id'),
+       FROM fhir.patient_name WHERE _resource_id = :'resource_id'),
        'Gavrila'::varchar,
        'patient data was correctly updated');
 

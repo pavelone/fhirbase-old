@@ -89,12 +89,12 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
            '"' || schm || '"."' || fhir.table_name(var_path) || '" t' || level::varchar ||
 
          CASE WHEN level = 1 THEN
-           -- E'\n where t' || level::varchar || '.container_id IS NULL'
+           -- E'\n where t' || level::varchar || '._container_id IS NULL'
            ''
          ELSE
            E'\nwhere t' ||
-             level::varchar || '."resource_id" = t1."_id" and t' ||
-             level::varchar || '."parent_id" = t' ||
+             level::varchar || '."_resource_id" = t1."_id" and t' ||
+             level::varchar || '."_parent_id" = t' ||
              (level - 1)::varchar || '."_id"'
          END;
 
@@ -104,11 +104,11 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
                  t1.id,
                  t1.resource_type as "resourceType",
                  CASE
-                     WHEN t1.container_id IS NULL THEN
+                     WHEN t1._container_id IS NULL THEN
                        (
                          SELECT array_to_json(array_agg(fhir.select_contained(r._id, fhir.table_name(ARRAY[r.resource_type]))))
                          FROM fhir.resource r
-                         WHERE r.container_id = t1._id
+                         WHERE r._container_id = t1._id
                        )
                      ELSE NULL
                  END AS "contained",
@@ -148,16 +148,17 @@ CREATE OR REPLACE FUNCTION create_resource_view(resource_name varchar, schm varc
       $SELECT$
         SELECT t_1._id,
                row_to_json(t_1, true) AS json,
-               res_table.container_id AS container_id ,
+               res_table._container_id AS _container_id ,
                res_table.id AS id
         FROM (
       $SELECT$ ||
       E'\n' || indent(gen_select_sql(ARRAY[resource_name], schm), 1) ||
-      ') t_1 JOIN fhir.' || res_table_name || ' res_table ON res_table._id = t_1._id;';
+      ') t_1 JOIN fhir.' || res_table_name || ' res_table ON res_table._id = t_1._id' ||
+      E'\n' || indent('WHERE res_table._state = ''current'';', 2);
 
     EXECUTE
       'CREATE OR REPLACE VIEW fhir."view_' || res_table_name || '" AS SELECT _id, json ' ||
-      'FROM fhir."view_' || res_table_name || '_with_containeds" WHERE container_id IS NULL';
+      'FROM fhir."view_' || res_table_name || '_with_containeds" WHERE _container_id IS NULL';
   END
 $$;
 

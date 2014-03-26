@@ -27,7 +27,7 @@ SELECT is(count(*)::integer, 1, 'insert patient')
 SELECT is(
        (SELECT family FROM fhir.patient_name
          WHERE text = 'Roel'
-         AND resource_id = :'resource_id'),
+         AND _resource_id = :'resource_id'),
        ARRAY['Bor']::varchar[],
        'should record name');
 
@@ -37,7 +37,7 @@ SELECT is(_type, 'patient')
 
 SELECT is(count(*)::int, 2)
        FROM fhir.patient_gender_cd
-       WHERE resource_id = :'resource_id';
+       WHERE _resource_id = :'resource_id';
 
 SELECT is_empty(
   'SELECT *
@@ -48,20 +48,20 @@ SELECT is_empty(
 
 SELECT * FROM fhir.organization;
 
-SELECT is((SELECT array_agg(name) FROM fhir.organization
-       WHERE container_id = :'resource_id'),
+SELECT is((SELECT array_agg(name ORDER BY name) FROM fhir.organization
+       WHERE _container_id = :'resource_id'),
        ARRAY['ACME', 'Foobar']::varchar[],
        'contained resource was correctly saved');
 
-SELECT is((SELECT array_agg(id) FROM fhir.organization
-       WHERE container_id = :'resource_id'),
+SELECT is((SELECT array_agg(id order by id) FROM fhir.organization
+       WHERE _container_id = :'resource_id'),
        ARRAY['#org1', '#org2']::varchar[],
        'id should be correct');
 
-SELECT is((SELECT array_agg(ot.value) FROM fhir.organization_telecom ot
-       JOIN fhir.organization o ON o._id = ot.parent_id
-       WHERE o.container_id = :'resource_id'),
-       ARRAY['+31612234322', '+31612234000']::varchar[],
+SELECT is((SELECT array_agg(ot.value ORDER BY value) FROM fhir.organization_telecom ot
+       JOIN fhir.organization o ON o._id = ot._parent_id
+       WHERE o._container_id = :'resource_id'),
+       ARRAY['+31612234000', '+31612234322']::varchar[],
        'contained resource was correctly saved');
 
 SELECT * FROM finish();
