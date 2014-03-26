@@ -44,8 +44,8 @@ CREATE TABLE fhir.resource_component (
   _id uuid,
   _type VARCHAR NOT NULL,
   _unknown_attributes json,
-  _parent_id UUID NOT NULL, -- references *component*(_id)
-  _resource_id UUID NOT NULL -- references *resource*(_version_id)
+  _parent_id UUID,
+  _resource_id UUID NOT NULL
 );
 
 CREATE VIEW meta.datatypes_ddl AS (
@@ -92,19 +92,19 @@ SELECT
   , 'ALTER TABLE fhir.' || table_name || ' ALTER COLUMN _type SET DEFAULT $$' || table_name || '$$'
   , 'ALTER TABLE fhir.' || table_name || ' ADD PRIMARY KEY(' || CASE WHEN base_table = 'resource' THEN '_version_id' ELSE '_id' END || ')'
   ,CASE
-     WHEN base_table = 'resource' THEN
-          'CREATE INDEX ON fhir.' || table_name || ' (_container_id);'
-       || 'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_id) WHERE _state = ''current'''
-     ELSE
-          'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_resource_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
-       || 'CREATE INDEX ON fhir.' || table_name || ' (_resource_id);'
-       || 'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_parent_id) REFERENCES fhir.' || parent_table_name || ' ('
-       || CASE
-            WHEN array_length(path, 1) = 2 THEN '_version_id'
-            ELSE '_id'
-          END
-       || ') ON DELETE CASCADE DEFERRABLE;'
-       || 'CREATE INDEX ON fhir.' || table_name || ' (_parent_id);'
+   WHEN base_table = 'resource' THEN
+        'CREATE INDEX ON fhir.' || table_name || ' (_container_id);'
+     || 'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_id) WHERE _state = ''current'''
+   ELSE
+        'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_resource_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
+     || 'CREATE INDEX ON fhir.' || table_name || ' (_resource_id);'
+     || 'CREATE INDEX ON fhir.' || table_name || ' (_parent_id);'
+     || CASE
+        WHEN array_length(path, 1) > 2 THEN
+             'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_parent_id) REFERENCES fhir.' || parent_table_name || ' (_id) ON DELETE CASCADE DEFERRABLE;'
+          || 'ALTER TABLE fhir.' || table_name || ' ALTER COLUMN _parent_id SET NOT NULL;'
+        ELSE ''
+        END
    END
   ] AS ddls
   FROM meta.resource_tables

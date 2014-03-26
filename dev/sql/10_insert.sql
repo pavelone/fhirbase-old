@@ -35,20 +35,17 @@ SELECT
      'table_name', table_name)
     ELSE
       fhir.eval_template($SQL$
-         _{{table_name}}  AS (
-           SELECT
-             p._resource_id as _resource_id,
-             uuid_generate_v4() as uuid,
-             uuid_generate_v4() as version_id,
-             {{path}}::text[] as path,
-             null::uuid as container_id,
-             case
-               when array_length(path, 1) = 2 then p.version_id
-               else p.uuid
-             end as _parent_id,
-             {{value}} as value
-           FROM _{{parent_table}} p
-           WHERE p.value IS NOT NULL
+        _{{table_name}}  AS (
+          SELECT
+            p.version_id as _resource_id,
+            uuid_generate_v4() as uuid,
+            null::uuid as version_id,
+            {{path}}::text[] as path,
+            null::uuid as container_id,
+            p.uuid as _parent_id,
+            {{value}} as value
+          FROM _{{parent_table}} p
+          WHERE p.value IS NOT NULL
         )
         $SQL$,
         'table_name', table_name,
