@@ -27,17 +27,17 @@ SELECT is(count(*)::integer, 1, 'insert patient')
 SELECT is(
        (SELECT family FROM fhir.patient_name
          WHERE text = 'Roel'
-         AND _resource_id = :'resource_id'),
+         AND _version_id = :'resource_id'),
        ARRAY['Bor']::varchar[],
        'should record name');
 
 SELECT is(_type, 'patient')
        FROM fhir.resource
-       WHERE _id = :'resource_id';
+       WHERE _logical_id = :'resource_id';
 
 SELECT is(count(*)::int, 2)
        FROM fhir.patient_gender_cd
-       WHERE _resource_id = :'resource_id';
+       WHERE _version_id = :'resource_id';
 
 SELECT is_empty(
   'SELECT *
@@ -59,7 +59,7 @@ SELECT is((SELECT array_agg(id order by id) FROM fhir.organization
        'id should be correct');
 
 SELECT is((SELECT array_agg(ot.value ORDER BY value) FROM fhir.organization_telecom ot
-       JOIN fhir.organization o ON o._id = ot._parent_id
+       JOIN fhir.organization o ON o._version_id = ot._version_id
        WHERE o._container_id = :'resource_id'),
        ARRAY['+31612234000', '+31612234322']::varchar[],
        'contained resource was correctly saved');

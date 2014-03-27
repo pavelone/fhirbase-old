@@ -28,7 +28,7 @@ CREATE INDEX resource_elements_expanded_with_types_popped_path_idx
        ON meta.resource_elements_expanded_with_types (fhir.array_pop(path));
 
 /* DROP FUNCTION IF EXISTS select_contained(uuid, varchar) CASCADE; */
-CREATE OR REPLACE FUNCTION select_contained(rid uuid, resource_type varchar)
+CREATE OR REPLACE FUNCTION select_contained(logical_id uuid, resource_type varchar)
   RETURNS json
   LANGUAGE plpgsql
   AS $$
@@ -36,9 +36,9 @@ CREATE OR REPLACE FUNCTION select_contained(rid uuid, resource_type varchar)
     contained json;
   BEGIN
     EXECUTE
-      'SELECT t.json FROM fhir."view_' || resource_type || '_with_containeds" t WHERE t._id = $1 LIMIT 1'
+      'SELECT t.json FROM fhir."view_' || resource_type || '_with_containeds" t WHERE t._logical_id = $1 LIMIT 1'
     INTO contained
-    USING rid;
+    USING logical_id;
 
     RETURN contained;
   END
@@ -93,22 +93,22 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
            ''
          ELSE
            E'\nwhere t' ||
-             level::varchar || '."_resource_id" = t1."_id" and t' ||
+             level::varchar || '."_version_id" = t1."_logical_id" and t' ||
              level::varchar || '."_parent_id" = t' ||
-             (level - 1)::varchar || '."_id"'
+             (level - 1)::varchar || '."_logical_id"'
          END;
 
       IF level = 1 THEN
         RETURN $SELECT$
-          SELECT t1._id,
+          SELECT t1._logical_id,
                  t1.id,
                  t1.resource_type as "resourceType",
                  CASE
                      WHEN t1._container_id IS NULL THEN
                        (
-                         SELECT array_to_json(array_agg(fhir.select_contained(r._id, fhir.table_name(ARRAY[r.resource_type]))))
+                         SELECT array_to_json(array_agg(fhir.select_contained(r._logical_id, fhir.table_name(ARRAY[r.resource_type]))))
                          FROM fhir.resource r
-                         WHERE r._container_id = t1._id
+                         WHERE r._container_id = t1._logical_id
                        )
                      ELSE NULL
                  END AS "contained",
@@ -146,18 +146,18 @@ CREATE OR REPLACE FUNCTION create_resource_view(resource_name varchar, schm varc
     EXECUTE
       'CREATE OR REPLACE VIEW "' || schm ||'"."view_' || res_table_name || '_with_containeds" AS ' ||
       $SELECT$
-        SELECT t_1._id,
+        SELECT t_1._logical_id,
                row_to_json(t_1, true) AS json,
                res_table._container_id AS _container_id ,
                res_table.id AS id
         FROM (
       $SELECT$ ||
       E'\n' || indent(gen_select_sql(ARRAY[resource_name], schm), 1) ||
-      ') t_1 JOIN fhir.' || res_table_name || ' res_table ON res_table._id = t_1._id' ||
+      ') t_1 JOIN fhir.' || res_table_name || ' res_table ON res_table._logical_id = t_1._logical_id' ||
       E'\n' || indent('WHERE res_table._state = ''current'';', 2);
 
     EXECUTE
-      'CREATE OR REPLACE VIEW fhir."view_' || res_table_name || '" AS SELECT _id, json ' ||
+      'CREATE OR REPLACE VIEW fhir."view_' || res_table_name || '" AS SELECT _logical_id, json ' ||
       'FROM fhir."view_' || res_table_name || '_with_containeds" WHERE _container_id IS NULL';
   END
 $$;

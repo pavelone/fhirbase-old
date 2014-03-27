@@ -28,24 +28,24 @@ CREATE TYPE fhir.resource_state AS ENUM (
 );
 
 CREATE TABLE fhir.resource (
-  _id UUID,
   _version_id UUID NOT NULL DEFAULT uuid_generate_v4(),
+  _logical_id UUID,
   _last_modified_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
   _state fhir.resource_state NOT NULL DEFAULT 'current',
+  _container_id UUID,
   _type VARCHAR NOT NULL,
   _unknown_attributes json,
   resource_type varchar,
   language VARCHAR,
-  _container_id UUID,
   id VARCHAR
 );
 
 CREATE TABLE fhir.resource_component (
   _id uuid,
-  _type VARCHAR NOT NULL,
-  _unknown_attributes json,
   _parent_id UUID,
-  _resource_id UUID NOT NULL
+  _version_id UUID NOT NULL,
+  _type VARCHAR NOT NULL,
+  _unknown_attributes json
 );
 
 CREATE VIEW meta.datatypes_ddl AS (
@@ -94,13 +94,13 @@ SELECT
   ,CASE
    WHEN base_table = 'resource' THEN
         'CREATE INDEX ON fhir.' || table_name || ' (_container_id);'
-     || 'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_id) WHERE _state = ''current'''
+     || 'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_logical_id) WHERE _state = ''current'''
    ELSE
-       '' -- 'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_resource_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
-     || 'CREATE INDEX ON fhir.' || table_name || ' (_resource_id);'
+        'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_version_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
+     || 'CREATE INDEX ON fhir.' || table_name || ' (_version_id);'
      || 'CREATE INDEX ON fhir.' || table_name || ' (_parent_id);'
      || CASE
-        WHEN false THEN -- array_length(path, 1) > 2 THEN
+        WHEN array_length(path, 1) > 2 THEN
              'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_parent_id) REFERENCES fhir.' || parent_table_name || ' (_id) ON DELETE CASCADE DEFERRABLE;'
           || 'ALTER TABLE fhir.' || table_name || ' ALTER COLUMN _parent_id SET NOT NULL;'
         ELSE ''

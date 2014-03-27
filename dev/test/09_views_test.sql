@@ -41,7 +41,7 @@ SELECT is(
        '3'::varchar,
        'receive correct multipleBirthInteger from patient view');
 
-SELECT is_empty('SELECT _id FROM fhir.view_organization
+SELECT is_empty('SELECT 1 FROM fhir.view_organization
                         WHERE (json->>''name'')::varchar = ''ACME''::varchar',
                 'contained resource is not available as regular resource');
 
