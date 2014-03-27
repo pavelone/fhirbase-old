@@ -37,12 +37,12 @@ SELECT
       fhir.eval_template($SQL$
         _{{table_name}}  AS (
           SELECT
-            p.version_id as _resource_id,
+            {{resource_id}} as _resource_id,
             uuid_generate_v4() as uuid,
             null::uuid as version_id,
             {{path}}::text[] as path,
             null::uuid as container_id,
-            p.uuid as _parent_id,
+            {{parent_id}} as _parent_id,
             {{value}} as value
           FROM _{{parent_table}} p
           WHERE p.value IS NOT NULL
@@ -51,7 +51,9 @@ SELECT
         'table_name', table_name,
         'path', quote_literal(path::text),
         'value', fhir.json_extract_value_ddl(max, fhir.array_last(path)),
-        'parent_table', fhir.table_name(fhir.array_pop(path))
+        'parent_table', fhir.table_name(fhir.array_pop(path)),
+        'parent_id', case when array_length(path, 1) = 2 then 'null::uuid' else 'p.uuid' end,
+        'resource_id', case when array_length(path, 1) = 2 then 'p.version_id' else 'p._resource_id' end
       )
     END as cte
 FROM meta.resource_tables
@@ -111,7 +113,7 @@ $BODY$
         SELECT DISTINCT _resource_id FROM
         (
           SELECT _resource_id,
-                 meta.eval_insert(build_insert_statment( fhir.table_name(path)::text, value, id::text, _parent_id::text, _resource_id::text, container_id::text ))
+                 meta.eval_insert(build_insert_statment( fhir.table_name(path)::text, value, id::text, _parent_id::text, _resource_id::text, _version_id::text, container_id::text ))
           FROM fhir.insert_{{resource}}($1, $2, $3)
           WHERE value IS NOT NULL
           ORDER BY path

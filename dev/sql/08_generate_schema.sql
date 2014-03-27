@@ -96,11 +96,11 @@ SELECT
         'CREATE INDEX ON fhir.' || table_name || ' (_container_id);'
      || 'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_id) WHERE _state = ''current'''
    ELSE
-        'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_resource_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
+       '' -- 'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_resource_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
      || 'CREATE INDEX ON fhir.' || table_name || ' (_resource_id);'
      || 'CREATE INDEX ON fhir.' || table_name || ' (_parent_id);'
      || CASE
-        WHEN array_length(path, 1) > 2 THEN
+        WHEN false THEN -- array_length(path, 1) > 2 THEN
              'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_parent_id) REFERENCES fhir.' || parent_table_name || ' (_id) ON DELETE CASCADE DEFERRABLE;'
           || 'ALTER TABLE fhir.' || table_name || ' ALTER COLUMN _parent_id SET NOT NULL;'
         ELSE ''

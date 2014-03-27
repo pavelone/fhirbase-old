@@ -15,6 +15,7 @@ FUNCTION meta.eval_insert(str text)
 RETURNS text AS
 $$
   BEGIN
+    RAISE NOTICE E'eval_insert\n%', str;
     EXECUTE str;
     RETURN 'inserted';
   END;
@@ -44,7 +45,7 @@ CREATE INDEX fhir_columns_table_name ON fhir_columns
 
 -- build insert string from json and table meta info
 CREATE OR REPLACE
-FUNCTION build_insert_statment(_table_name text, _obj json, _id text, _parent_id text, _resource_id text, _container_id text)
+FUNCTION build_insert_statment(_table_name text, _obj json, _id text, _parent_id text, _resource_id text, _version_id text, _container_id text)
 RETURNS text
 AS $$
 
@@ -76,6 +77,9 @@ WITH vals AS ( -- split json into key-value filter only columns
       UNION
         SELECT '_resource_id' AS key, quote_literal(_resource_id) AS value
         WHERE _parent_id IS NOT NULL AND _resource_id <> _id
+      UNION
+        SELECT '_version_id' AS key, quote_literal(_version_id) AS value
+        WHERE _version_id IS NOT NULL
 )
 select 'insert into '
    || 'fhir.' || _table_name
