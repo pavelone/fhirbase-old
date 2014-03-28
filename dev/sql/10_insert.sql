@@ -98,23 +98,25 @@ $BODY$
     r record;
     sql text;
   BEGIN
-     EXECUTE fhir.eval_template($SQL$
-        SELECT DISTINCT version_id
-        FROM (
-          SELECT version_id,
-                 meta.eval_insert(build_insert_statment(
-                    fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text))
-          FROM fhir.insert_{{resource}}($1, $2, $3)
-          WHERE value IS NOT NULL
-          ORDER BY path
-        ) _;
+    EXECUTE fhir.eval_template($SQL$
+      SELECT DISTINCT version_id
+      FROM (
+        SELECT version_id,
+               meta.eval_insert(build_insert_statment(
+                  fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text))
+        FROM fhir.insert_{{resource}}($1, $2, $3)
+        WHERE value IS NOT NULL
+        ORDER BY path
+      ) _;
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
-    INTO logical_id, version_id USING _resource, _container_id, _logical_id;
+    INTO version_id USING _resource, _container_id, _logical_id;
 
-    SELECT res._logical_id
-    INTO logical_id
-    FROM fhir.resource res
-    WHERE res._version_id = version_id;
+    EXECUTE fhir.eval_template($SQL$
+      SELECT _logical_id
+      FROM fhir.{{resource}}
+      WHERE _version_id = $1;
+      $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
+    INTO logical_id USING version_id;
 
     FOR r IN SELECT * FROM json_array_elements(_resource->'contained') LOOP
       PERFORM fhir.insert_resource(r.value, version_id);
