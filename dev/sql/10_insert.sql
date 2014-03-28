@@ -25,9 +25,9 @@ SELECT
     THEN
      fhir.eval_template($SQL$
        _{{table_name}}  AS (
-         SELECT uuid as _logical_id, uuid, version_id, path, _container_id as container_id, null::uuid as _parent_id, value
+         SELECT path, value, logical_id, version_id, container_id, null::uuid as id, null::uuid as parent_id
             FROM (
-              SELECT coalesce(_logical_id, uuid_generate_v4()) as uuid , uuid_generate_v4() as version_id, ARRAY['{{resource}}'] as path, _data as value
+              SELECT coalesce(_logical_id, uuid_generate_v4()) as logical_id , uuid_generate_v4() as version_id, ARRAY['{{resource}}'] as path, _data as value
          ) _
       )
      $SQL$,
@@ -37,13 +37,13 @@ SELECT
       fhir.eval_template($SQL$
         _{{table_name}}  AS (
           SELECT
-            {{resource_id}} as _logical_id,
-            uuid_generate_v4() as uuid,
-            null::uuid as version_id,
             {{path}}::text[] as path,
+            {{value}} as value,
+            null::uuid as logical_id,
+            p.version_id,
             null::uuid as container_id,
+            uuid_generate_v4() as id,
             {{parent_id}} as _parent_id,
-            {{value}} as value
           FROM _{{parent_table}} p
           WHERE p.value IS NOT NULL
         )
@@ -52,8 +52,7 @@ SELECT
         'path', quote_literal(path::text),
         'value', fhir.json_extract_value_ddl(max, fhir.array_last(path)),
         'parent_table', fhir.table_name(fhir.array_pop(path)),
-        'parent_id', case when array_length(path, 1) = 2 then 'null::uuid' else 'p.uuid' end,
-        'resource_id', case when array_length(path, 1) = 2 then 'p.version_id' else 'p._logical_id' end
+        'parent_id', case when array_length(path, 1) = 2 then 'null::uuid' else 'p.id' end
       )
     END as cte
 FROM meta.resource_tables
@@ -67,7 +66,7 @@ SELECT
   fhir.eval_template($SQL$
      --DROP FUNCTION IF EXISTS fhir.insert_{{fn_name}}(json, uuid);
      CREATE OR REPLACE FUNCTION fhir.insert_{{fn_name}}(_data json, _container_id uuid default null, _logical_id uuid default null)
-     RETURNS TABLE(_logical_id uuid, id uuid, _version_id uuid, path text[], container_id uuid, _parent_id uuid, value json) AS
+     RETURNS TABLE(path text[], value json, logical_id uuid, version_id uuid, container_id uuid, id uuid, parent_id uuid) AS
      $fn$
         WITH {{ctes}}
         {{selects}};
@@ -89,42 +88,32 @@ SELECT 'create insert functions...', count(*)  FROM (
    SELECT meta.eval_function(ddl) FROM insert_ddls
 ) _;
 
-/* DO $$ */
-/*   DECLARE */
-/*     r RECORD; */
-/*   BEGIN */
-/*     FOR r IN SELECT * FROM insert_ddls LOOP */
-/*       PERFORM meta.eval_function(r.ddl); */
-/*     END LOOP; */
-/*   END */
-/* $$; */
-
-
 CREATE OR REPLACE FUNCTION
 fhir.insert_resource(_resource JSON, _container_id UUID DEFAULT NULL, _logical_id UUID DEFAULT NULL)
 RETURNS UUID AS
 $BODY$
   DECLARE
-    uuid_ uuid;
+    logical_id uuid;
+    version_id uuid;
     r record;
     sql text;
   BEGIN
      EXECUTE fhir.eval_template($SQL$
-        SELECT DISTINCT _logical_id FROM
+        SELECT DISTINCT _logical_id, _version_id FROM
         (
-          SELECT _logical_id,
-                 meta.eval_insert(build_insert_statment( fhir.table_name(path)::text, value, id::text, _parent_id::text, _logical_id::text, _version_id::text, container_id::text ))
+          SELECT _logical_id, _version_id
+                 meta.eval_insert(build_insert_statment(fhir.table_name(path)::text, value, _version_id::text, _logical_id::text, container_id::text, _id::text, _parent_id::text))
           FROM fhir.insert_{{resource}}($1, $2, $3)
           WHERE value IS NOT NULL
           ORDER BY path
         ) _;
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
-    INTO uuid_ USING _resource, _container_id, _logical_id;
+    INTO logical_id, version_id USING _resource, _container_id, _logical_id;
 
       FOR r IN SELECT * FROM json_array_elements(_resource->'contained') LOOP
-        PERFORM fhir.insert_resource(r.value, uuid_);
+        PERFORM fhir.insert_resource(r.value, version_id);
       END LOOP;
-    RETURN uuid_;
+    RETURN logical_id;
   END;
 $BODY$
 LANGUAGE plpgsql VOLATILE;

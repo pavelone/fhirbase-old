@@ -28,7 +28,7 @@ CREATE INDEX resource_elements_expanded_with_types_popped_path_idx
        ON meta.resource_elements_expanded_with_types (fhir.array_pop(path));
 
 /* DROP FUNCTION IF EXISTS select_contained(uuid, varchar) CASCADE; */
-CREATE OR REPLACE FUNCTION select_contained(logical_id uuid, resource_type varchar)
+CREATE OR REPLACE FUNCTION select_contained(version_id uuid, resource_type varchar)
   RETURNS json
   LANGUAGE plpgsql
   AS $$
@@ -36,9 +36,9 @@ CREATE OR REPLACE FUNCTION select_contained(logical_id uuid, resource_type varch
     contained json;
   BEGIN
     EXECUTE
-      'SELECT t.json FROM fhir."view_' || resource_type || '_with_containeds" t WHERE t._logical_id = $1 LIMIT 1'
+      'SELECT t.json FROM fhir."view_' || resource_type || '_full" t WHERE t._version_id = $1 LIMIT 1'
     INTO contained
-    USING logical_id;
+    USING version_id;
 
     RETURN contained;
   END
@@ -88,27 +88,28 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
          E'\nfrom ' ||
            '"' || schm || '"."' || fhir.table_name(var_path) || '" t' || level::varchar ||
 
-         CASE WHEN level = 1 THEN
-           -- E'\n where t' || level::varchar || '._container_id IS NULL'
-           ''
+         CASE WHEN level > 1 THEN
+           E'\nwhere t' || level::varchar || '."_version_id" = t1."_version_id"'
          ELSE
-           E'\nwhere t' ||
-             level::varchar || '."_version_id" = t1."_logical_id" and t' ||
-             level::varchar || '."_parent_id" = t' ||
-             (level - 1)::varchar || '."_logical_id"'
+           ''
+         END ||
+         CASE WHEN level > 2 THEN
+           ' and t' || level::varchar || '."_parent_id" = t' || (level - 1)::varchar || '."_id"'
+         ELSE
+           ''
          END;
 
       IF level = 1 THEN
         RETURN $SELECT$
-          SELECT t1._logical_id,
+          SELECT t1._version_id,
                  t1.id,
                  t1.resource_type as "resourceType",
                  CASE
                      WHEN t1._container_id IS NULL THEN
                        (
-                         SELECT array_to_json(array_agg(fhir.select_contained(r._logical_id, fhir.table_name(ARRAY[r.resource_type]))))
+                         SELECT array_to_json(array_agg(fhir.select_contained(r._version_id, fhir.table_name(ARRAY[r.resource_type]))))
                          FROM fhir.resource r
-                         WHERE r._container_id = t1._logical_id
+                         WHERE r._container_id = t1._version_id
                        )
                      ELSE NULL
                  END AS "contained",
@@ -142,23 +143,40 @@ CREATE OR REPLACE FUNCTION create_resource_view(resource_name varchar, schm varc
     -- RAISE NOTICE 'Create JSON view for %', resource_name;
 
     res_table_name := fhir.table_name(ARRAY[resource_name]);
+    --technical: view_resource_type_full (_logical_id, json, _contained_id, id, _version_id, _state, _last_modified_date)
+    --vread: view_resource_type_history (_logical_id, json, _version_id, _state, _last_modified_date) where _contained_id is null
+    --read: view_resource_type (_logical_id, json) where _contained_id is null and _state = 'current'
 
     EXECUTE
-      'CREATE OR REPLACE VIEW "' || schm ||'"."view_' || res_table_name || '_with_containeds" AS ' ||
+      'CREATE OR REPLACE VIEW "' || schm || '"."view_' || res_table_name || '_full" AS ' ||
       $SELECT$
-        SELECT t_1._logical_id,
+        SELECT res_table._logical_id,
                row_to_json(t_1, true) AS json,
-               res_table._container_id AS _container_id ,
-               res_table.id AS id
+               res_table._container_id,
+               res_table.id,
+               t_1._version_id,
+               res_table._state,
+               res_table._last_modified_date
         FROM (
       $SELECT$ ||
       E'\n' || indent(gen_select_sql(ARRAY[resource_name], schm), 1) ||
-      ') t_1 JOIN fhir.' || res_table_name || ' res_table ON res_table._logical_id = t_1._logical_id' ||
-      E'\n' || indent('WHERE res_table._state = ''current'';', 2);
+      ') t_1 JOIN fhir.' || res_table_name || ' res_table ON res_table._version_id = t_1._version_id;';
 
     EXECUTE
-      'CREATE OR REPLACE VIEW fhir."view_' || res_table_name || '" AS SELECT _logical_id, json ' ||
-      'FROM fhir."view_' || res_table_name || '_with_containeds" WHERE _container_id IS NULL';
+      'CREATE OR REPLACE VIEW "' || schm || '"."view_' || res_table_name || '_history" AS ' ||
+      $SELECT$
+        SELECT _logical_id,
+               json,
+               _version_id,
+               _state,
+               _last_modified_date
+        FROM
+      $SELECT$ ||
+      ' "' || schm || '"."view_' || res_table_name || '_full" WHERE _container_id IS NULL;';
+
+    EXECUTE
+      'CREATE OR REPLACE VIEW "' || schm || '"."view_' || res_table_name || '" AS SELECT _logical_id, json ' ||
+      'FROM "' || schm || '"."view_' || res_table_name || '_history" WHERE _state = ''current'';';
   END
 $$;
 

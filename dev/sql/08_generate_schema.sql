@@ -30,7 +30,7 @@ CREATE TYPE fhir.resource_state AS ENUM (
 CREATE TABLE fhir.resource (
   _version_id UUID NOT NULL DEFAULT uuid_generate_v4(),
   _logical_id UUID,
-  _last_modified_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  _last_modified_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
   _state fhir.resource_state NOT NULL DEFAULT 'current',
   _container_id UUID,
   _type VARCHAR NOT NULL,
