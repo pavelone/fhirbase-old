@@ -28,8 +28,8 @@ CREATE TYPE fhir.resource_state AS ENUM (
 );
 
 CREATE TABLE fhir.resource (
-  _version_id UUID NOT NULL DEFAULT uuid_generate_v4(),
-  _logical_id UUID,
+  _version_id UUID NOT NULL,
+  _logical_id UUID NOT NULL,
   _last_modified_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
   _state fhir.resource_state NOT NULL DEFAULT 'current',
   _container_id UUID,
@@ -41,9 +41,9 @@ CREATE TABLE fhir.resource (
 );
 
 CREATE TABLE fhir.resource_component (
-  _id uuid,
-  _parent_id UUID,
   _version_id UUID NOT NULL,
+  _id uuid NOT NULL,
+  _parent_id UUID,
   _type VARCHAR NOT NULL,
   _unknown_attributes json
 );

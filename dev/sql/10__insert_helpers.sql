@@ -45,7 +45,7 @@ CREATE INDEX fhir_columns_table_name ON fhir_columns
 
 -- build insert string from json and table meta info
 CREATE OR REPLACE
-FUNCTION build_insert_statment(_table_name text, _obj json, _version_id text,  _logical_id text, _container_id text, _id text, _parent_id text)
+FUNCTION build_insert_statment(_table_name text, _obj json, _logical_id text, _version_id text, _container_id text, _id text, _parent_id text)
 RETURNS text
 AS $$
 
@@ -67,10 +67,10 @@ WITH vals AS ( -- split json into key-value filter only columns
           END AS value
       FROM vals
       UNION
-        SELECT '_version_id' AS key, quote_literal(_version_id) AS value
-      UNION
         SELECT '_logical_id' AS key, quote_literal(_logical_id) AS value
         WHERE _logical_id IS NOT NULL
+      UNION
+        SELECT '_version_id' AS key, quote_literal(_version_id) AS value
       UNION
         SELECT '_container_id' AS key, quote_literal(_container_id) AS value
         WHERE _container_id IS NOT NULL

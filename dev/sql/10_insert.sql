@@ -25,7 +25,7 @@ SELECT
     THEN
      fhir.eval_template($SQL$
        _{{table_name}}  AS (
-         SELECT path, value, logical_id, version_id, container_id, null::uuid as id, null::uuid as parent_id
+         SELECT path, value, logical_id, version_id, _container_id as container_id, null::uuid as id, null::uuid as parent_id
             FROM (
               SELECT coalesce(_logical_id, uuid_generate_v4()) as logical_id , uuid_generate_v4() as version_id, ARRAY['{{resource}}'] as path, _data as value
          ) _
@@ -43,7 +43,7 @@ SELECT
             p.version_id,
             null::uuid as container_id,
             uuid_generate_v4() as id,
-            {{parent_id}} as _parent_id,
+            {{parent_id}} as parent_id
           FROM _{{parent_table}} p
           WHERE p.value IS NOT NULL
         )
@@ -75,7 +75,7 @@ SELECT
   $SQL$,
    'fn_name', fhir.underscore(path[1]),
    'ctes',array_to_string(array_agg(cte order by path), E',\n'),
-   'selects', string_agg('SELECT * FROM _' || fhir.table_name(path), E'\n UNION ALL ')
+   'selects', array_to_string(array_agg(('SELECT * FROM _' || fhir.table_name(path)) order by path), E'\nUNION ALL\n')
   ) as ddl
  FROM insert_ctes
  GROUP BY path[1]
@@ -99,10 +99,11 @@ $BODY$
     sql text;
   BEGIN
      EXECUTE fhir.eval_template($SQL$
-        SELECT DISTINCT _logical_id, _version_id FROM
-        (
-          SELECT _logical_id, _version_id
-                 meta.eval_insert(build_insert_statment(fhir.table_name(path)::text, value, _version_id::text, _logical_id::text, container_id::text, _id::text, _parent_id::text))
+        SELECT DISTINCT version_id
+        FROM (
+          SELECT version_id,
+                 meta.eval_insert(build_insert_statment(
+                    fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text))
           FROM fhir.insert_{{resource}}($1, $2, $3)
           WHERE value IS NOT NULL
           ORDER BY path
@@ -110,9 +111,15 @@ $BODY$
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
     INTO logical_id, version_id USING _resource, _container_id, _logical_id;
 
-      FOR r IN SELECT * FROM json_array_elements(_resource->'contained') LOOP
-        PERFORM fhir.insert_resource(r.value, version_id);
-      END LOOP;
+    SELECT res._logical_id
+    INTO logical_id
+    FROM fhir.resource res
+    WHERE res._version_id = version_id;
+
+    FOR r IN SELECT * FROM json_array_elements(_resource->'contained') LOOP
+      PERFORM fhir.insert_resource(r.value, version_id);
+    END LOOP;
+
     RETURN logical_id;
   END;
 $BODY$
