@@ -13,11 +13,13 @@ BEGIN;
 \ir ../sql/10__insert_helpers.sql
 \ir ../sql/10_insert.sql
 
-SELECT plan(9);
-
 \set pt_json `cat $FHIRBASE_HOME/test/fixtures/patient.json`
 
+SELECT plan(9);
+
 SELECT fhir.insert_resource(:'pt_json'::json) AS resource_id \gset
+
+\echo :'resource_id';
 
 SELECT is(
        (SELECT COUNT(*) FROM fhir.patient),
@@ -26,18 +28,18 @@ SELECT is(
 
 SELECT is(
        (SELECT (json->>'resourceType')::varchar
-         FROM fhir.view_patient LIMIT 1),
+         FROM fhir.view_patient WHERE _logical_id = :'resource_id'),
        'Patient'::varchar,
        'receive correct resourceType from patient view');
 
 SELECT is(
        (SELECT (json->>'birthDate')::varchar
-         FROM fhir.view_patient LIMIT 1),
+         FROM fhir.view_patient _logical_id = :'resource_id'),
        '1960-03-13 00:00:00'::varchar,
        'receive correct birth_date from patient view');
 SELECT is(
        (SELECT (json->>'multipleBirthInteger')::varchar
-         FROM fhir.view_patient LIMIT 1),
+         FROM fhir.view_patient _logical_id = :'resource_id'),
        '3'::varchar,
        'receive correct multipleBirthInteger from patient view');
 
