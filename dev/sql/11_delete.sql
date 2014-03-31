@@ -1,7 +1,7 @@
 CREATE OR REPLACE
-FUNCTION fhir.delete_resource(_logical_id uuid)
+FUNCTION fhir.delete_resource(logical_id uuid)
   returns void
   language sql
   as $$
-  DELETE FROM fhir.resource WHERE _logical_id = delete_resource._logical_id;
-$$;
+    UPDATE fhir.resource SET _state = 'deleted' WHERE _logical_id = delete_resource.logical_id;
+  $$;
