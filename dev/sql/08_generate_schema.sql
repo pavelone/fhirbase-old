@@ -35,6 +35,7 @@ CREATE TABLE fhir.resource (
   _container_id UUID,
   _type VARCHAR NOT NULL,
   _unknown_attributes json,
+  _index integer,
   resource_type varchar,
   language VARCHAR,
   id VARCHAR
@@ -45,7 +46,8 @@ CREATE TABLE fhir.resource_component (
   _id uuid NOT NULL,
   _parent_id UUID,
   _type VARCHAR NOT NULL,
-  _unknown_attributes json
+  _unknown_attributes json,
+  _index integer
 );
 
 CREATE VIEW meta.datatypes_ddl AS (
