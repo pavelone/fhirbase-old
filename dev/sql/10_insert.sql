@@ -21,40 +21,63 @@ $$ IMMUTABLE LANGUAGE sql;
 CREATE OR REPLACE VIEW insert_ctes AS (
 SELECT
   path,
-  CASE WHEN array_length(path,1)=1
-    THEN
+  CASE
+  WHEN array_length(path,1) = 1 THEN
      fhir.eval_template($SQL$
        _{{table_name}}  AS (
-         SELECT path, value, logical_id, version_id, _container_id as container_id, null::uuid as id, null::uuid as parent_id
+         SELECT path, value, logical_id, version_id, _container_id as container_id, null::uuid as id, null::uuid as parent_id, index
             FROM (
-              SELECT coalesce(_logical_id, uuid_generate_v4()) as logical_id , uuid_generate_v4() as version_id, ARRAY['{{resource}}'] as path, _data as value
+              SELECT coalesce(_logical_id, uuid_generate_v4()) as logical_id , uuid_generate_v4() as version_id, ARRAY['{{resource}}'] as path, _data as value, _index as index
          ) _
       )
      $SQL$,
      'resource', path[1],
      'table_name', table_name)
-    ELSE
-      fhir.eval_template($SQL$
-        _{{table_name}}  AS (
-          SELECT
-            {{path}}::text[] as path,
-            {{value}} as value,
-            null::uuid as logical_id,
-            p.version_id,
-            null::uuid as container_id,
-            uuid_generate_v4() as id,
-            {{parent_id}} as parent_id
-          FROM _{{parent_table}} p
-          WHERE p.value IS NOT NULL
-        )
-        $SQL$,
-        'table_name', table_name,
-        'path', quote_literal(path::text),
-        'value', fhir.json_extract_value_ddl(max, fhir.array_last(path)),
-        'parent_table', fhir.table_name(fhir.array_pop(path)),
-        'parent_id', case when array_length(path, 1) = 2 then 'null::uuid' else 'p.id' end
+  WHEN max = '*' THEN
+    fhir.eval_template($SQL$
+      _{{table_name}}  AS (
+        SELECT
+          {{path}}::text[] as path,
+          ar.value as value,
+          null::uuid as logical_id,
+          p.version_id,
+          null::uuid as container_id,
+          uuid_generate_v4() as id,
+          {{parent_id}} as parent_id,
+          (row_number() over ())::integer as index
+        FROM _{{parent_table}} p, json_array_elements((p.value::json)->{{key}}) ar
+        WHERE p.value IS NOT NULL
       )
-    END as cte
+      $SQL$,
+      'table_name', table_name,
+      'path', quote_literal(path::text),
+      'key', '''' || fhir.array_last(path) || '''',
+      'parent_table', fhir.table_name(fhir.array_pop(path)),
+      'parent_id', case when array_length(path, 1) = 2 then 'null::uuid' else 'p.id' end
+    )
+  ELSE
+    fhir.eval_template($SQL$
+      _{{table_name}}  AS (
+        SELECT
+          {{path}}::text[] as path,
+          {{value}} as value,
+          null::uuid as logical_id,
+          p.version_id,
+          null::uuid as container_id,
+          uuid_generate_v4() as id,
+          {{parent_id}} as parent_id,
+          null::integer as index
+        FROM _{{parent_table}} p
+        WHERE p.value IS NOT NULL
+      )
+      $SQL$,
+      'table_name', table_name,
+      'path', quote_literal(path::text),
+      'value', '((p.value::json)->''' || fhir.array_last(path) || ''')',
+      'parent_table', fhir.table_name(fhir.array_pop(path)),
+      'parent_id', case when array_length(path, 1) = 2 then 'null::uuid' else 'p.id' end
+    )
+  END as cte
 FROM meta.resource_tables
 ORDER BY PATH
 );
@@ -64,9 +87,9 @@ CREATE OR REPLACE VIEW insert_ddls AS (
 SELECT
   path[1] as resource,
   fhir.eval_template($SQL$
-     --DROP FUNCTION IF EXISTS fhir.insert_{{fn_name}}(json, uuid);
-     CREATE OR REPLACE FUNCTION fhir.insert_{{fn_name}}(_data json, _container_id uuid default null, _logical_id uuid default null)
-     RETURNS TABLE(path text[], value json, logical_id uuid, version_id uuid, container_id uuid, id uuid, parent_id uuid) AS
+     --DROP FUNCTION IF EXISTS fhir.insert_{{fn_name}}(json, uuid, uuid, integer);
+     CREATE OR REPLACE FUNCTION fhir.insert_{{fn_name}}(_data json, _container_id uuid default null, _logical_id uuid default null, _index integer default null)
+     RETURNS TABLE(path text[], value json, logical_id uuid, version_id uuid, container_id uuid, id uuid, parent_id uuid, index integer) AS
      $fn$
         WITH {{ctes}}
         {{selects}};
@@ -89,7 +112,7 @@ SELECT 'create insert functions...', count(*)  FROM (
 ) _;
 
 CREATE OR REPLACE FUNCTION
-fhir.insert_resource(_resource JSON, _container_id UUID DEFAULT NULL, _logical_id UUID DEFAULT NULL)
+fhir.insert_resource(_resource JSON, _container_id UUID DEFAULT NULL, _logical_id UUID DEFAULT NULL, _index integer default null)
 RETURNS UUID AS
 $BODY$
   DECLARE
@@ -103,13 +126,13 @@ $BODY$
       FROM (
         SELECT version_id,
                meta.eval_insert(build_insert_statment(
-                  fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text))
-        FROM fhir.insert_{{resource}}($1, $2, $3)
+                  fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text, index::text))
+        FROM fhir.insert_{{resource}}($1, $2, $3, $4)
         WHERE value IS NOT NULL
         ORDER BY path
       ) _;
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
-    INTO version_id USING _resource, _container_id, _logical_id;
+    INTO version_id USING _resource, _container_id, _logical_id, _index;
 
     EXECUTE fhir.eval_template($SQL$
       SELECT _logical_id
@@ -118,8 +141,8 @@ $BODY$
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
     INTO logical_id USING version_id;
 
-    FOR r IN SELECT * FROM json_array_elements(_resource->'contained') LOOP
-      PERFORM fhir.insert_resource(r.value, version_id);
+    FOR r IN SELECT *, (row_number() over ())::integer as _index FROM json_array_elements(_resource->'contained') LOOP
+      PERFORM fhir.insert_resource(r.value, version_id, null, r._index);
     END LOOP;
 
     RETURN logical_id;

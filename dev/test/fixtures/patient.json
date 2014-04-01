@@ -21,6 +21,11 @@
         "system":"phone",
         "value":"+31612234000",
         "use":"mobile"
+      },
+      {
+        "system":"phone",
+        "value":"+31612234001",
+        "use":"work"
       }
     ]
   }],

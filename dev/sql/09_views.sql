@@ -55,6 +55,9 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
   columns varchar;
   selects varchar;
   subselect text;
+  -- HACK! HACK! HACK!
+  skip_table boolean := false;
+
   BEGIN
     level := array_length(var_path, 1);
 
@@ -68,6 +71,12 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
     FROM meta.resource_elements_expanded_with_types n
     JOIN meta.primitive_types pt ON underscore(pt.type) = underscore(n.type)
     WHERE fhir.array_pop(n.path) = var_path;
+
+    if columns is not null then
+      columns := columns || ', t' || level::varchar || '._index';
+    else
+      skip_table := true;
+    end if;
 
     SELECT array_to_string(array_agg(E'(\n' || indent(gen_select_sql(n.path, schm), 3) || E'\n) as "' || camelize(fhir.array_last(n.path)) || '"'), E',\n')
     INTO selects
@@ -107,7 +116,8 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
                  CASE
                      WHEN t1._container_id IS NULL THEN
                        (
-                         SELECT array_to_json(array_agg(fhir.select_contained(r._version_id, fhir.table_name(ARRAY[r.resource_type]))))
+                         SELECT array_to_json(array_agg(fhir.select_contained(r._version_id, fhir.table_name(ARRAY[r.resource_type])) ORDER BY r._index))
+                         --SELECT array_to_json(array_agg(fhir.select_contained(r._version_id, fhir.table_name(ARRAY[r.resource_type]))))
                          FROM fhir.resource r
                          WHERE r._container_id = t1._version_id
                        )
@@ -119,7 +129,12 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
       ELSE
         RETURN
           CASE WHEN isArray THEN
-            'select array_to_json(array_agg(row_to_json(t_' || level::varchar || ', true)), true) from ('
+            case
+            when skip_table then
+              'select array_to_json(array_agg(row_to_json(t_' || level::varchar || ', true)), true) from ('
+            else
+              'select array_to_json(array_agg(row_to_json(t_' || level::varchar || ', true) ORDER BY t_' || level::varchar || '._index), true) from ('
+            end
             || indent(subselect, 1)
             || E'\n) t_' || level::varchar
           ELSE

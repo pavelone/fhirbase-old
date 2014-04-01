@@ -66,7 +66,7 @@ SELECT is((SELECT array_agg(id order by id) FROM fhir.organization
 SELECT is((SELECT array_agg(ot.value ORDER BY value) FROM fhir.organization_telecom ot
        JOIN fhir.organization o ON o._version_id = ot._version_id
        WHERE o._container_id = :'version_id'),
-       ARRAY['+31612234000', '+31612234322']::varchar[],
+       ARRAY['+31612234000', '+31612234001', '+31612234322']::varchar[],
        'contained resource was correctly saved');
 
 SELECT * FROM finish();
