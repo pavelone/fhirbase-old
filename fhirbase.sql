@@ -407,11 +407,11 @@ $_$;
 -- Name: delete_resource(uuid); Type: FUNCTION; Schema: fhir; Owner: -
 --
 
-CREATE FUNCTION delete_resource(_logical_id uuid) RETURNS void
+CREATE FUNCTION delete_resource(logical_id uuid) RETURNS void
     LANGUAGE sql
     AS $$
-  DELETE FROM fhir.resource WHERE _logical_id = delete_resource._logical_id;
-$$;
+    UPDATE fhir.resource SET _state = 'deleted' WHERE _logical_id = delete_resource.logical_id;
+  $$;
 
 
 --
@@ -17329,22 +17329,25 @@ CREATE FUNCTION insert_resource(_resource json, _container_id uuid DEFAULT NULL:
     r record;
     sql text;
   BEGIN
-     EXECUTE fhir.eval_template($SQL$
-        SELECT DISTINCT version_id
-        FROM (
-          SELECT version_id,
-                 meta.eval_insert(build_insert_statment(
-                    fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text))
-          FROM fhir.insert_{{resource}}($1, $2, $3)
-          WHERE value IS NOT NULL
-          ORDER BY path
-        ) _;
+    EXECUTE fhir.eval_template($SQL$
+      SELECT DISTINCT version_id
+      FROM (
+        SELECT version_id,
+               meta.eval_insert(build_insert_statment(
+                  fhir.table_name(path)::text, value, logical_id::text, version_id::text, container_id::text, id::text, parent_id::text))
+        FROM fhir.insert_{{resource}}($1, $2, $3)
+        WHERE value IS NOT NULL
+        ORDER BY path
+      ) _;
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
-    INTO logical_id, version_id USING _resource, _container_id, _logical_id;
-    SELECT _logical_id
-    INTO logical_id
-    FROM fhir.resource
-    WHERE _version_id = version_id;
+    INTO version_id USING _resource, _container_id, _logical_id;
+
+    EXECUTE fhir.eval_template($SQL$
+      SELECT _logical_id
+      FROM fhir.{{resource}}
+      WHERE _version_id = $1;
+      $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
+    INTO logical_id USING version_id;
 
     FOR r IN SELECT * FROM json_array_elements(_resource->'contained') LOOP
       PERFORM fhir.insert_resource(r.value, version_id);
@@ -19406,10 +19409,10 @@ CREATE FUNCTION update_resource(id uuid, resource_data json) RETURNS integer
 DECLARE
   is_exists boolean;
 BEGIN
-  IF NOT EXISTS(select 1 FROM fhir.resource WHERE _logical_id = update_resource.id) THEN
+  IF NOT EXISTS(select 1 FROM fhir.resource WHERE _state = 'current' and _logical_id = update_resource.id) THEN
     RAISE EXCEPTION 'Resource with id % not found', id;
   ELSE
-    UPDATE fhir.resource SET _state = 'archived' WHERE _logical_id = update_resource.id;
+    UPDATE fhir.resource SET _state = 'archived' WHERE _state = 'current' and _logical_id = update_resource.id;
     PERFORM fhir.insert_resource(resource_data, null::uuid, id);
   END IF;
   RETURN 0::integer;
