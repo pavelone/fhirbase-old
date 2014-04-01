@@ -41,7 +41,7 @@ This solution is simple and scalable but has trade-offs:
 * weak data consistency control: type checks, referential integrity, aggregate invariants;
 * complicated batch transformations.
 
-Second option is a usage of document databases like MongoDb, CouchDb, RethinkDb etc. They feat better (removing some part of hand work) but share some of trade-offs.
+Second option is a usage of document databases like MongoDb, CouchDb, RethinkDb etc. They fit better (removing some part of hand work) but share some of trade-offs.
 
 * Transaction consistency often works only on a document level granularity so you have to manage complex transactions manually.
 * Querying is less powerful and declarative than for relational databases (joins, aggregations).
@@ -53,7 +53,7 @@ Third option – relational schema – solves most of the problems and brings ne
 * How to simplify aggregates (__resource__) operations (persistence, retrieval)?
 * How to scale?
 
-But we believe that after solving this problems we will get:
+But we believe that after solving these problems we will get:
 
 * fine-Granularity of data control;
 * Rich Querying & Data Abstraction capabilities;
