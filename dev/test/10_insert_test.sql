@@ -15,13 +15,21 @@ BEGIN;
 
 \set pt_json `cat $FHIRBASE_HOME/test/fixtures/patient.json`
 
-SELECT plan(9);
+SELECT plan(11);
 
 select fhir.insert_resource(:'pt_json'::json) as logical_id \gset
 select _version_id as version_id from fhir.resource where _logical_id = :'logical_id' \gset
 
 \echo :'logical_id';
 \echo :'version_id';
+
+SELECT is(count(*)::integer, 1, 'insert tag')
+  FROM fhir.tag;
+
+SELECT is(
+        (SELECT term FROM fhir.tag WHERE _version_id = :'version_id'),
+        'test term',
+        'should save term');
 
 SELECT is(count(*)::integer, 1, 'insert patient')
        FROM fhir.patient;

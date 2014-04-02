@@ -50,12 +50,22 @@ CREATE TABLE fhir.resource_component (
   _index integer
 );
 
+CREATE TABLE fhir.tag (
+  _id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  _version_id UUID NOT NULL,
+  _logical_id UUID NOT NULL,
+  scheme VARCHAR NOT NULL,
+  term VARCHAR NOT NULL,
+  label VARCHAR
+);
+
 CREATE VIEW meta.datatypes_ddl AS (
 SELECT
      'CREATE TABLE'
     ||  ' fhir."' || table_name  || '"'
     ||  '(' || array_to_string(columns, ',') || ')'
     ||  ' INHERITS (fhir.' || base_table || ')'
+    -- TODO: add constraints!
   AS ddl
   FROM meta.datatype_tables
  WHERE table_name NOT IN ('resource', 'backbone_element')

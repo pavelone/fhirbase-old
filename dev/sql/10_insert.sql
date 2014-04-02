@@ -141,6 +141,8 @@ $BODY$
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
     INTO logical_id USING version_id;
 
+    PERFORM build_tags(_resource->'category', version_id, logical_id);
+
     FOR r IN SELECT *, (row_number() over ())::integer as _index FROM json_array_elements(_resource->'contained') LOOP
       PERFORM fhir.insert_resource(r.value, version_id, null, r._index);
     END LOOP;

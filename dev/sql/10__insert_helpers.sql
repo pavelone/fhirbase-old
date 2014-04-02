@@ -91,3 +91,10 @@ select 'insert into '
    FROM key_vals b;
 $$ LANGUAGE sql VOLATILE;
 --}}}
+
+CREATE OR REPLACE FUNCTION build_tags(tags JSON, version_id UUID, logical_id UUID) RETURNS VOID LANGUAGE SQL AS $$
+  INSERT INTO fhir.tag (_version_id, _logical_id, scheme, term, label)
+    SELECT
+      build_tags.version_id, build_tags.logical_id, scheme, term, label
+    FROM  json_populate_recordset(null::fhir.tag, tags);
+$$;
