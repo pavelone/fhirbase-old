@@ -15,7 +15,7 @@ BEGIN;
 
 \set pt_json `cat $FHIRBASE_HOME/test/fixtures/patient.json`
 
-SELECT plan(9);
+SELECT plan(10);
 
 SELECT fhir.insert_resource(:'pt_json'::json) AS logical_id \gset
 
@@ -31,6 +31,12 @@ SELECT is(
          FROM fhir.view_patient WHERE _logical_id = :'logical_id'::uuid),
        'Patient'::varchar,
        'receive correct resourceType from patient view');
+
+SELECT is(
+       (SELECT (json #>> '{category,0,scheme}')::varchar
+         FROM fhir.view_patient WHERE _logical_id = :'logical_id'::uuid),
+       'test scheme'::varchar,
+       'receive correct tag from patient view');
 
 SELECT is(
        (SELECT (json->>'birthDate')::varchar

@@ -27,6 +27,21 @@ CREATE INDEX resource_elements_expanded_with_types_type_idx
 CREATE INDEX resource_elements_expanded_with_types_popped_path_idx
        ON meta.resource_elements_expanded_with_types (fhir.array_pop(path));
 
+
+CREATE TYPE _tag_fields AS (scheme VARCHAR, term VARCHAR, label VARCHAR);
+
+CREATE VIEW view_tags AS (
+  SELECT _version_id,
+         _logical_id,
+         array_to_json(array_agg(
+            row_to_json(
+              row(scheme, term, label)::_tag_fields)
+            )
+         ) as category
+  FROM tag
+  GROUP BY _version_id, _logical_id
+);
+
 /* DROP FUNCTION IF EXISTS select_contained(uuid, varchar) CASCADE; */
 CREATE OR REPLACE FUNCTION select_contained(version_id uuid, resource_type varchar)
   RETURNS json
@@ -52,7 +67,8 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
   DECLARE
   level integer;
   isArray boolean;
-  columns varchar;
+  columns varchar[];
+  columns_str varchar;
   selects varchar;
   subselect text;
   -- HACK! HACK! HACK!
@@ -66,17 +82,23 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
     FROM meta.resource_elements_expanded_with_types n
     WHERE n.path = var_path;
 
-    SELECT array_to_string(array_agg('t' || level::varchar || '."' || underscore(fhir.array_last(n.path)) || '" as "' || camelize(fhir.array_last(n.path)) || '"'), ', ')
+    SELECT array_agg('t' || level::varchar || '."' || underscore(fhir.array_last(n.path)) || '" as "' || camelize(fhir.array_last(n.path)) || '"')
     INTO columns
     FROM meta.resource_elements_expanded_with_types n
     JOIN meta.primitive_types pt ON underscore(pt.type) = underscore(n.type)
     WHERE fhir.array_pop(n.path) = var_path;
 
     if columns is not null then
-      columns := columns || ', t' || level::varchar || '._index';
+      columns := columns || ('t' || level::varchar || '._index')::varchar;
     else
       skip_table := true;
     end if;
+
+    if level = 1 then
+      columns := coalesce(columns, '{}'::varchar[]) || 'tt.category'::varchar;
+    end if;
+
+    columns_str := array_to_string(columns, ', ');
 
     SELECT array_to_string(array_agg(E'(\n' || indent(gen_select_sql(n.path, schm), 3) || E'\n) as "' || camelize(fhir.array_last(n.path)) || '"'), E',\n')
     INTO selects
@@ -84,29 +106,37 @@ CREATE OR REPLACE FUNCTION gen_select_sql(var_path varchar[], schm varchar)
     LEFT JOIN meta.primitive_types pt on underscore(pt.type) = underscore(n.type)
     WHERE pt.type IS NULL AND fhir.array_pop(n.path) = var_path and fhir.array_last(n.path) not in ('contained');
 
-    IF selects IS NULL AND columns IS NULL THEN
+    IF selects IS NULL AND columns_str IS NULL THEN
       RETURN 'NULL';
     ELSE
       subselect :=
-         CASE WHEN level = 1 THEN '' ELSE E'\nselect ' END ||
+        CASE WHEN level = 1 THEN
+          ''
+        ELSE
+          E'\nselect '
+        END ||
 
-         COALESCE(selects, '') ||
-         (CASE WHEN selects IS NOT NULL AND columns IS NOT NULL THEN E',\n' ELSE '' END) ||
-         COALESCE(columns, '') ||
+        COALESCE(selects, '') ||
+        (CASE WHEN selects IS NOT NULL AND char_length(selects) > 1 AND columns_str IS NOT NULL THEN E',\n' ELSE '' END) ||
+        COALESCE(columns_str, '') ||
 
-         E'\nfrom ' ||
-           '"' || schm || '"."' || fhir.table_name(var_path) || '" t' || level::varchar ||
+        E'\nfrom ' ||
+          '"' || schm || '"."' || fhir.table_name(var_path) || '" t' || level::varchar ||
 
-         CASE WHEN level > 1 THEN
-           E'\nwhere t' || level::varchar || '."_version_id" = t1."_version_id"'
-         ELSE
-           ''
-         END ||
-         CASE WHEN level > 2 THEN
-           ' and t' || level::varchar || '."_parent_id" = t' || (level - 1)::varchar || '."_id"'
-         ELSE
-           ''
-         END;
+        CASE WHEN level = 1 THEN
+          ' LEFT JOIN fhir.view_tags tt USING (_version_id) '
+        END ||
+
+        CASE WHEN level > 1 THEN
+          E'\nwhere t' || level::varchar || '."_version_id" = t1."_version_id"'
+        ELSE
+          ''
+        END ||
+        CASE WHEN level > 2 THEN
+          ' and t' || level::varchar || '."_parent_id" = t' || (level - 1)::varchar || '."_id"'
+        ELSE
+          ''
+        END;
 
       IF level = 1 THEN
         RETURN $SELECT$
