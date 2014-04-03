@@ -268,6 +268,17 @@ CREATE TYPE "ValueSetStatus" AS ENUM (
 
 
 --
+-- Name: _tag_fields; Type: TYPE; Schema: fhir; Owner: -
+--
+
+CREATE TYPE _tag_fields AS (
+	scheme character varying,
+	term character varying,
+	label character varying
+);
+
+
+--
 -- Name: resource_state; Type: TYPE; Schema: fhir; Owner: -
 --
 
@@ -442,7 +453,8 @@ CREATE FUNCTION gen_select_sql(var_path character varying[], schm character vary
   DECLARE
   level integer;
   isArray boolean;
-  columns varchar;
+  columns varchar[];
+  columns_str varchar;
   selects varchar;
   subselect text;
   -- HACK! HACK! HACK!
@@ -456,17 +468,23 @@ CREATE FUNCTION gen_select_sql(var_path character varying[], schm character vary
     FROM meta.resource_elements_expanded_with_types n
     WHERE n.path = var_path;
 
-    SELECT array_to_string(array_agg('t' || level::varchar || '."' || underscore(fhir.array_last(n.path)) || '" as "' || camelize(fhir.array_last(n.path)) || '"'), ', ')
+    SELECT array_agg('t' || level::varchar || '."' || underscore(fhir.array_last(n.path)) || '" as "' || camelize(fhir.array_last(n.path)) || '"')
     INTO columns
     FROM meta.resource_elements_expanded_with_types n
     JOIN meta.primitive_types pt ON underscore(pt.type) = underscore(n.type)
     WHERE fhir.array_pop(n.path) = var_path;
 
     if columns is not null then
-      columns := columns || ', t' || level::varchar || '._index';
+      columns := columns || ('t' || level::varchar || '._index')::varchar;
     else
       skip_table := true;
     end if;
+
+    if level = 1 then
+      columns := coalesce(columns, '{}'::varchar[]) || 'tt.category'::varchar;
+    end if;
+
+    columns_str := array_to_string(columns, ', ');
 
     SELECT array_to_string(array_agg(E'(\n' || indent(gen_select_sql(n.path, schm), 3) || E'\n) as "' || camelize(fhir.array_last(n.path)) || '"'), E',\n')
     INTO selects
@@ -474,29 +492,40 @@ CREATE FUNCTION gen_select_sql(var_path character varying[], schm character vary
     LEFT JOIN meta.primitive_types pt on underscore(pt.type) = underscore(n.type)
     WHERE pt.type IS NULL AND fhir.array_pop(n.path) = var_path and fhir.array_last(n.path) not in ('contained');
 
-    IF selects IS NULL AND columns IS NULL THEN
+    IF selects IS NULL AND columns_str IS NULL THEN
       RETURN 'NULL';
     ELSE
       subselect :=
-         CASE WHEN level = 1 THEN '' ELSE E'\nselect ' END ||
+        CASE WHEN level = 1 THEN
+          ''
+        ELSE
+          E'\nselect '
+        END ||
 
-         COALESCE(selects, '') ||
-         (CASE WHEN selects IS NOT NULL AND columns IS NOT NULL THEN E',\n' ELSE '' END) ||
-         COALESCE(columns, '') ||
+        COALESCE(selects, '') ||
+        (CASE WHEN selects IS NOT NULL AND char_length(selects) > 1 AND columns_str IS NOT NULL THEN E',\n' ELSE '' END) ||
+        COALESCE(columns_str, '') ||
 
-         E'\nfrom ' ||
-           '"' || schm || '"."' || fhir.table_name(var_path) || '" t' || level::varchar ||
+        E'\nfrom ' ||
+          '"' || schm || '"."' || fhir.table_name(var_path) || '" t' || level::varchar ||
 
-         CASE WHEN level > 1 THEN
-           E'\nwhere t' || level::varchar || '."_version_id" = t1."_version_id"'
-         ELSE
-           ''
-         END ||
-         CASE WHEN level > 2 THEN
-           ' and t' || level::varchar || '."_parent_id" = t' || (level - 1)::varchar || '."_id"'
-         ELSE
-           ''
-         END;
+        CASE WHEN level = 1 THEN
+          ' LEFT JOIN fhir.view_tags tt USING (_version_id) '
+        ELSE
+          ''
+        END ||
+
+        CASE WHEN level > 1 THEN
+          E'\nwhere t' || level::varchar || '."_version_id" = t1."_version_id"'
+        ELSE
+          ''
+        END ||
+
+        CASE WHEN level > 2 THEN
+          ' and t' || level::varchar || '."_parent_id" = t' || (level - 1)::varchar || '."_id"'
+        ELSE
+          ''
+        END;
 
       IF level = 1 THEN
         RETURN $SELECT$
@@ -18363,6 +18392,8 @@ CREATE FUNCTION insert_resource(_resource json, _container_id uuid DEFAULT NULL:
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
     INTO logical_id USING version_id;
 
+    PERFORM build_tags(_resource->'category', version_id, logical_id);
+
     FOR r IN SELECT *, (row_number() over ())::integer as _index FROM json_array_elements(_resource->'contained') LOOP
       PERFORM fhir.insert_resource(r.value, version_id, null, r._index);
     END LOOP;
@@ -20645,6 +20676,20 @@ select 'insert into '
    || ' (' || string_agg(key, ',') || ') '
    || ' VALUES (' || string_agg(value, ',') || ')'
    FROM key_vals b;
+$$;
+
+
+--
+-- Name: build_tags(json, uuid, uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION build_tags(tags json, version_id uuid, logical_id uuid) RETURNS void
+    LANGUAGE sql
+    AS $$
+  INSERT INTO fhir.tag (_version_id, _logical_id, scheme, term, label)
+    SELECT
+      build_tags.version_id, build_tags.logical_id, scheme, term, label
+    FROM  json_populate_recordset(null::fhir.tag, tags);
 $$;
 
 
@@ -32501,6 +32546,32 @@ INHERITS (narrative);
 
 
 --
+-- Name: tag; Type: TABLE; Schema: fhir; Owner: -; Tablespace: 
+--
+
+CREATE TABLE tag (
+    _id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    _version_id uuid NOT NULL,
+    _logical_id uuid NOT NULL,
+    scheme character varying NOT NULL,
+    term character varying NOT NULL,
+    label character varying
+);
+
+
+--
+-- Name: view_tags; Type: VIEW; Schema: fhir; Owner: -
+--
+
+CREATE VIEW view_tags AS
+ SELECT tag._version_id,
+    tag._logical_id,
+    array_to_json(array_agg(row_to_json(ROW(tag.scheme, tag.term, tag.label)::_tag_fields))) AS category
+   FROM tag
+  GROUP BY tag._version_id, tag._logical_id;
+
+
+--
 -- Name: view_adverse_reaction_full; Type: VIEW; Schema: fhir; Owner: -
 --
 
@@ -32578,8 +32649,8 @@ CREATE VIEW view_adverse_reaction_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM adverse_reaction_symptom_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -32599,8 +32670,10 @@ CREATE VIEW view_adverse_reaction_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.date,
             t1.did_not_occur_flag AS "didNotOccurFlag",
-            t1._index
-           FROM adverse_reaction t1) t_1
+            t1._index,
+            tt.category
+           FROM (adverse_reaction t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN adverse_reaction res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -32667,8 +32740,8 @@ CREATE VIEW view_alert_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM alert_category_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -32710,8 +32783,10 @@ CREATE VIEW view_alert_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.note,
             t1.status,
-            t1._index
-           FROM alert t1) t_1
+            t1._index,
+            tt.category
+           FROM (alert t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1(_version_id, id, "resourceType", contained, author, category, identifier, subject, text, note, status, _index, category_1)
    JOIN alert res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -32821,8 +32896,10 @@ CREATE VIEW view_allergy_intolerance_full AS
             t1.sensitivity_type AS "sensitivityType",
             t1.criticality,
             t1.recorded_date AS "recordedDate",
-            t1._index
-           FROM allergy_intolerance t1) t_1
+            t1._index,
+            tt.category
+           FROM (allergy_intolerance t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN allergy_intolerance res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -32898,8 +32975,8 @@ CREATE VIEW view_care_plan_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM care_plan_activity_simple_code_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -32910,9 +32987,9 @@ CREATE VIEW view_care_plan_full AS
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM care_plan_activity_simple_daily_amount t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS "dailyAmount",
@@ -32937,9 +33014,9 @@ CREATE VIEW view_care_plan_full AS
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM care_plan_activity_simple_quantity t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS quantity,
@@ -32957,12 +33034,12 @@ CREATE VIEW view_care_plan_full AS
                                                                            FROM care_plan_activity_simple_timing_schedule_event t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS event,
                                                             ( SELECT row_to_json(t_5.*, true) AS row_to_json
-                                                                   FROM ( SELECT t5.units,
+                                                                   FROM ( SELECT t5."end",
+                                                                            t5.units,
                                                                             t5.frequency,
                                                                             t5.count,
                                                                             t5."when",
                                                                             t5.duration,
-                                                                            t5."end",
                                                                             t5._index
                                                                            FROM care_plan_activity_simple_timing_schedule_repeat t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS repeat
@@ -33037,8 +33114,8 @@ CREATE VIEW view_care_plan_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM care_plan_participant_role_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33069,8 +33146,10 @@ CREATE VIEW view_care_plan_full AS
             t1.notes,
             t1.status,
             t1.modified,
-            t1._index
-           FROM care_plan t1) t_1
+            t1._index,
+            tt.category
+           FROM (care_plan t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN care_plan res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -33149,8 +33228,8 @@ CREATE VIEW view_composition_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM composition_class_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -33168,8 +33247,8 @@ CREATE VIEW view_composition_full AS
                             t2.version,
                             t2.display,
                             t2.code,
-                            t2.system,
                             t2."primary",
+                            t2.system,
                             t2._index
                            FROM composition_confidentiality t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS confidentiality,
@@ -33197,8 +33276,8 @@ CREATE VIEW view_composition_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM composition_event_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33252,8 +33331,8 @@ CREATE VIEW view_composition_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM composition_section_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33301,8 +33380,8 @@ CREATE VIEW view_composition_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM composition_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -33313,8 +33392,10 @@ CREATE VIEW view_composition_full AS
             t1.title,
             t1.status,
             t1.date,
-            t1._index
-           FROM composition t1) t_1
+            t1._index,
+            tt.category
+           FROM (composition t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN composition res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -33426,8 +33507,10 @@ CREATE VIEW view_concept_map_full AS
             t1.status,
             t1.date,
             t1.experimental,
-            t1._index
-           FROM concept_map t1) t_1
+            t1._index,
+            tt.category
+           FROM (concept_map t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN concept_map res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -33495,8 +33578,8 @@ CREATE VIEW view_condition_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM condition_category_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -33515,8 +33598,8 @@ CREATE VIEW view_condition_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM condition_certainty_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -33535,8 +33618,8 @@ CREATE VIEW view_condition_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM condition_code_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -33562,8 +33645,8 @@ CREATE VIEW view_condition_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM condition_evidence_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33611,8 +33694,8 @@ CREATE VIEW view_condition_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM condition_loc_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33637,8 +33720,8 @@ CREATE VIEW view_condition_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM condition_related_item_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33667,8 +33750,8 @@ CREATE VIEW view_condition_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM condition_severity_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -33694,8 +33777,8 @@ CREATE VIEW view_condition_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM condition_stage_summary_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -33723,8 +33806,10 @@ CREATE VIEW view_condition_full AS
             t1.onset_date AS "onsetDate",
             t1.date_asserted AS "dateAsserted",
             t1.abatement_date AS "abatementDate",
-            t1._index
-           FROM condition t1) t_1
+            t1._index,
+            tt.category
+           FROM (condition t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1(_version_id, id, "resourceType", contained, "abatementAge", asserter, category, certainty, code, encounter, evidence, identifier, location, "onsetAge", "relatedItem", severity, stage, subject, text, notes, status, "abatementBoolean", "onsetDate", "dateAsserted", "abatementDate", _index, category_1)
    JOIN condition res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -33804,8 +33889,8 @@ CREATE VIEW view_conformance_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM conformance_messaging_event_code t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS code,
@@ -33819,8 +33904,8 @@ CREATE VIEW view_conformance_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM conformance_messaging_event_protocol t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS protocol,
@@ -33918,8 +34003,8 @@ CREATE VIEW view_conformance_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM conformance_rest_security_service_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -33975,8 +34060,10 @@ CREATE VIEW view_conformance_full AS
             t1.date,
             t1.experimental,
             t1.accept_unknown AS "acceptUnknown",
-            t1._index
-           FROM conformance t1) t_1
+            t1._index,
+            tt.category
+           FROM (conformance t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN conformance res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -34094,8 +34181,8 @@ CREATE VIEW view_device_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM device_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34110,8 +34197,10 @@ CREATE VIEW view_device_full AS
             t1.lot_number AS "lotNumber",
             t1.url,
             t1.expiry,
-            t1._index
-           FROM device t1) t_1
+            t1._index,
+            tt.category
+           FROM (device t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN device res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -34212,8 +34301,8 @@ CREATE VIEW view_device_observation_report_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM device_observation_report_virtual_device_channel_code_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -34243,8 +34332,8 @@ CREATE VIEW view_device_observation_report_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM device_observation_report_virtual_device_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -34255,8 +34344,10 @@ CREATE VIEW view_device_observation_report_full AS
                            FROM device_observation_report_virtual_device t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "virtualDevice",
             t1.instant,
-            t1._index
-           FROM device_observation_report t1) t_1
+            t1._index,
+            tt.category
+           FROM (device_observation_report t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN device_observation_report res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -34330,8 +34421,8 @@ CREATE VIEW view_diagnostic_order_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM diagnostic_order_event_description_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -34376,8 +34467,8 @@ CREATE VIEW view_diagnostic_order_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM diagnostic_order_item_body_site_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -34396,8 +34487,8 @@ CREATE VIEW view_diagnostic_order_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM diagnostic_order_item_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -34443,8 +34534,10 @@ CREATE VIEW view_diagnostic_order_full AS
             t1.clinical_notes AS "clinicalNotes",
             t1.status,
             t1.priority,
-            t1._index
-           FROM diagnostic_order t1) t_1
+            t1._index,
+            tt.category
+           FROM (diagnostic_order t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN diagnostic_order res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -34505,8 +34598,8 @@ CREATE VIEW view_diagnostic_report_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM diagnostic_report_coded_diagnosis_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34568,8 +34661,8 @@ CREATE VIEW view_diagnostic_report_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM diagnostic_report_name_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34617,8 +34710,8 @@ CREATE VIEW view_diagnostic_report_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM diagnostic_report_service_category_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34648,8 +34741,10 @@ CREATE VIEW view_diagnostic_report_full AS
             t1.status,
             t1.issued,
             t1.diagnostic_date_time AS "diagnosticDateTime",
-            t1._index
-           FROM diagnostic_report t1) t_1
+            t1._index,
+            tt.category
+           FROM (diagnostic_report t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN diagnostic_report res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -34716,8 +34811,8 @@ CREATE VIEW view_document_manifest_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM document_manifest_confidentiality_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34806,8 +34901,8 @@ CREATE VIEW view_document_manifest_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM document_manifest_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34817,10 +34912,12 @@ CREATE VIEW view_document_manifest_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS type,
             t1.description,
             t1.status,
-            t1.source,
             t1.created,
-            t1._index
-           FROM document_manifest t1) t_1
+            t1.source,
+            t1._index,
+            tt.category
+           FROM (document_manifest t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN document_manifest res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -34893,8 +34990,8 @@ CREATE VIEW view_document_reference_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM document_reference_class_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34913,8 +35010,8 @@ CREATE VIEW view_document_reference_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM document_reference_confidentiality_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -34934,8 +35031,8 @@ CREATE VIEW view_document_reference_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM document_reference_context_event_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -34954,8 +35051,8 @@ CREATE VIEW view_document_reference_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM document_reference_context_facility_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -34988,8 +35085,8 @@ CREATE VIEW view_document_reference_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM document_reference_doc_status_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -35066,8 +35163,8 @@ CREATE VIEW view_document_reference_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM document_reference_service_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35102,8 +35199,8 @@ CREATE VIEW view_document_reference_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM document_reference_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -35113,17 +35210,19 @@ CREATE VIEW view_document_reference_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS type,
             t1.hash,
             t1.description,
+            t1.indexed,
             t1.status,
             t1.primary_language AS "primaryLanguage",
             t1.mime_type AS "mimeType",
+            t1.created,
             t1.size,
             t1.policy_manager AS "policyManager",
             t1.location,
             t1.format,
-            t1.indexed,
-            t1.created,
-            t1._index
-           FROM document_reference t1) t_1
+            t1._index,
+            tt.category
+           FROM (document_reference t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN document_reference res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -35200,8 +35299,8 @@ CREATE VIEW view_encounter_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM encounter_hospitalization_admit_source_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35226,8 +35325,8 @@ CREATE VIEW view_encounter_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM encounter_hospitalization_diet_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35252,8 +35351,8 @@ CREATE VIEW view_encounter_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM encounter_hospitalization_discharge_disposition_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35304,8 +35403,8 @@ CREATE VIEW view_encounter_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM encounter_hospitalization_special_arrangement_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35324,8 +35423,8 @@ CREATE VIEW view_encounter_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM encounter_hospitalization_special_courtesy_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35397,8 +35496,8 @@ CREATE VIEW view_encounter_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM encounter_participant_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35431,8 +35530,8 @@ CREATE VIEW view_encounter_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM encounter_priority_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -35451,8 +35550,8 @@ CREATE VIEW view_encounter_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM encounter_reason_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -35489,8 +35588,8 @@ CREATE VIEW view_encounter_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM encounter_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -35500,8 +35599,10 @@ CREATE VIEW view_encounter_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS type,
             t1.status,
             t1.class,
-            t1._index
-           FROM encounter t1) t_1
+            t1._index,
+            tt.category
+           FROM (encounter t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN encounter res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -35584,18 +35685,18 @@ CREATE VIEW view_family_history_full AS
                                                    FROM ( SELECT ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM family_history_relation_condition_onset_range_high t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS high,
                                                             ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM family_history_relation_condition_onset_range_low t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS low
@@ -35612,8 +35713,8 @@ CREATE VIEW view_family_history_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM family_history_relation_condition_outcome_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -35632,8 +35733,8 @@ CREATE VIEW view_family_history_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM family_history_relation_condition_type_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -35651,18 +35752,18 @@ CREATE VIEW view_family_history_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM family_history_relation_deceased_range_high t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS high,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM family_history_relation_deceased_range_low t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS low
@@ -35679,8 +35780,8 @@ CREATE VIEW view_family_history_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM family_history_relation_relationship_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35711,8 +35812,10 @@ CREATE VIEW view_family_history_full AS
                            FROM family_history_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.note,
-            t1._index
-           FROM family_history t1) t_1
+            t1._index,
+            tt.category
+           FROM (family_history t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN family_history res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -35774,8 +35877,8 @@ CREATE VIEW view_group_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM group_characteristic_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35794,8 +35897,8 @@ CREATE VIEW view_group_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM group_characteristic_value_codeable_concept_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -35806,9 +35909,9 @@ CREATE VIEW view_group_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM group_characteristic_value_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS "valueQuantity",
@@ -35816,18 +35919,18 @@ CREATE VIEW view_group_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM group_characteristic_value_range_high t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS high,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM group_characteristic_value_range_low t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS low
@@ -35849,8 +35952,8 @@ CREATE VIEW view_group_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM group_code_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -35894,8 +35997,10 @@ CREATE VIEW view_group_full AS
             t1.type,
             t1.quantity,
             t1.actual,
-            t1._index
-           FROM "group" t1) t_1
+            t1._index,
+            tt.category
+           FROM ("group" t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN "group" res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -36007,8 +36112,8 @@ CREATE VIEW view_imaging_study_full AS
                             t2.version,
                             t2.display,
                             t2.code,
-                            t2.system,
                             t2."primary",
+                            t2.system,
                             t2._index
                            FROM imaging_study_procedure t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS procedure,
@@ -36029,8 +36134,8 @@ CREATE VIEW view_imaging_study_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM imaging_study_series_body_site t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS "bodySite",
@@ -36041,23 +36146,23 @@ CREATE VIEW view_imaging_study_full AS
                                                             t4._index
                                                            FROM imaging_study_series_instance_attachment t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS attachment,
+                                            t3.uid,
+                                            t3.sopclass,
                                             t3.type,
                                             t3.title,
                                             t3.number,
                                             t3.url,
-                                            t3.uid,
-                                            t3.sopclass,
                                             t3._index
                                            FROM imaging_study_series_instance t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS instance,
+                            t2.uid,
                             t2.description,
                             t2.modality,
                             t2.availability,
+                            t2.date_time AS "dateTime",
                             t2.number_of_instances AS "numberOfInstances",
                             t2.number,
                             t2.url,
-                            t2.uid,
-                            t2.date_time AS "dateTime",
                             t2._index
                            FROM imaging_study_series t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS series,
@@ -36073,17 +36178,19 @@ CREATE VIEW view_imaging_study_full AS
                             t2._index
                            FROM imaging_study_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
+            t1.uid,
             t1.description,
             t1.clinical_information AS "clinicalInformation",
             t1.modality,
             t1.availability,
+            t1.date_time AS "dateTime",
             t1.number_of_series AS "numberOfSeries",
             t1.number_of_instances AS "numberOfInstances",
             t1.url,
-            t1.uid,
-            t1.date_time AS "dateTime",
-            t1._index
-           FROM imaging_study t1) t_1
+            t1._index,
+            tt.category
+           FROM (imaging_study t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN imaging_study res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -36136,9 +36243,9 @@ CREATE VIEW view_imm_full AS
             ( SELECT row_to_json(t_2.*, true) AS row_to_json
                    FROM ( SELECT t2.units,
                             t2.code,
+                            t2.comparator,
                             t2.system,
                             t2.value,
-                            t2.comparator,
                             t2._index
                            FROM imm_dose_quantity t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "doseQuantity",
@@ -36154,8 +36261,8 @@ CREATE VIEW view_imm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_explanation_reason_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36174,8 +36281,8 @@ CREATE VIEW view_imm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_explanation_refusal_reason_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36252,8 +36359,8 @@ CREATE VIEW view_imm_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM imm_route_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36272,8 +36379,8 @@ CREATE VIEW view_imm_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM imm_site_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36311,8 +36418,8 @@ CREATE VIEW view_imm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_vaccination_protocol_dose_status_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36331,8 +36438,8 @@ CREATE VIEW view_imm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_vaccination_protocol_dose_status_reason_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36351,8 +36458,8 @@ CREATE VIEW view_imm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_vaccination_protocol_dose_target_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36378,8 +36485,8 @@ CREATE VIEW view_imm_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM imm_vaccine_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36392,8 +36499,10 @@ CREATE VIEW view_imm_full AS
             t1.reported,
             t1.refused_indicator AS "refusedIndicator",
             t1.expiration_date AS "expirationDate",
-            t1._index
-           FROM imm t1) t_1
+            t1._index,
+            tt.category
+           FROM (imm t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN imm res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -36476,8 +36585,8 @@ CREATE VIEW view_imm_rec_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM imm_rec_recommendation_date_criterion_code_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -36500,8 +36609,8 @@ CREATE VIEW view_imm_rec_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_rec_recommendation_forecast_status_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36545,8 +36654,8 @@ CREATE VIEW view_imm_rec_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM imm_rec_recommendation_vaccine_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36554,8 +36663,8 @@ CREATE VIEW view_imm_rec_full AS
                                             t3._index
                                            FROM imm_rec_recommendation_vaccine_type t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS "vaccineType",
-                            t2.dose_number AS "doseNumber",
                             t2.date,
+                            t2.dose_number AS "doseNumber",
                             t2._index
                            FROM imm_rec_recommendation t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS recommendation,
@@ -36570,8 +36679,10 @@ CREATE VIEW view_imm_rec_full AS
                             t2.status,
                             t2._index
                            FROM imm_rec_text t2
-                          WHERE (t2._version_id = t1._version_id)) t_2) AS text
-           FROM imm_rec t1) t_1
+                          WHERE (t2._version_id = t1._version_id)) t_2) AS text,
+            tt.category
+           FROM (imm_rec t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN imm_rec res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -36632,8 +36743,8 @@ CREATE VIEW view_list_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM list_code_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36652,8 +36763,8 @@ CREATE VIEW view_list_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM list_empty_reason_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36673,8 +36784,8 @@ CREATE VIEW view_list_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM list_entry_flag_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -36734,8 +36845,10 @@ CREATE VIEW view_list_full AS
             t1.mode,
             t1.date,
             t1.ordered,
-            t1._index
-           FROM list t1) t_1
+            t1._index,
+            tt.category
+           FROM (list t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN list res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -36792,13 +36905,13 @@ CREATE VIEW view_loc_full AS
                                             t3._index
                                            FROM loc_address_period t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS period,
+                            t2.use,
                             t2.zip,
                             t2.text,
                             t2.state,
                             t2.line,
                             t2.country,
                             t2.city,
-                            t2.use,
                             t2._index
                            FROM loc_address t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS address,
@@ -36845,8 +36958,8 @@ CREATE VIEW view_loc_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM loc_physical_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36891,8 +37004,8 @@ CREATE VIEW view_loc_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM loc_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36904,8 +37017,10 @@ CREATE VIEW view_loc_full AS
             t1.description,
             t1.status,
             t1.mode,
-            t1._index
-           FROM loc t1) t_1
+            t1._index,
+            tt.category
+           FROM (loc t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN loc res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -36966,8 +37081,8 @@ CREATE VIEW view_med_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM med_code_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -36993,8 +37108,8 @@ CREATE VIEW view_med_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_package_container_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37006,9 +37121,9 @@ CREATE VIEW view_med_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_package_content_amount t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS amount,
@@ -37034,8 +37149,8 @@ CREATE VIEW view_med_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_product_form_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37048,18 +37163,18 @@ CREATE VIEW view_med_full AS
                                                    FROM ( SELECT ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM med_product_ingredient_amount_denominator t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS denominator,
                                                             ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM med_product_ingredient_amount_numerator t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS numerator
@@ -37084,8 +37199,10 @@ CREATE VIEW view_med_full AS
             t1.name,
             t1.kind,
             t1.is_brand AS "isBrand",
-            t1._index
-           FROM med t1) t_1
+            t1._index,
+            tt.category
+           FROM (med t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN med res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -37153,8 +37270,8 @@ CREATE VIEW view_med_adm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_adm_dosage_as_needed_codeable_concept_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37166,18 +37283,18 @@ CREATE VIEW view_med_adm_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_adm_dosage_max_dose_per_period_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_adm_dosage_max_dose_per_period_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -37194,8 +37311,8 @@ CREATE VIEW view_med_adm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_adm_dosage_method_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37206,9 +37323,9 @@ CREATE VIEW view_med_adm_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM med_adm_dosage_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -37216,18 +37333,18 @@ CREATE VIEW view_med_adm_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_adm_dosage_rate_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_adm_dosage_rate_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -37244,8 +37361,8 @@ CREATE VIEW view_med_adm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_adm_dosage_route_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37264,8 +37381,8 @@ CREATE VIEW view_med_adm_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_adm_dosage_site_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37345,8 +37462,8 @@ CREATE VIEW view_med_adm_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM med_adm_reason_not_given_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -37368,8 +37485,10 @@ CREATE VIEW view_med_adm_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "whenGiven",
             t1.status,
             t1.was_not_given AS "wasNotGiven",
-            t1._index
-           FROM med_adm t1) t_1
+            t1._index,
+            tt.category
+           FROM (med_adm t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN med_adm res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -37444,8 +37563,8 @@ CREATE VIEW view_med_disp_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_additional_instructions_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -37464,8 +37583,8 @@ CREATE VIEW view_med_disp_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_as_needed_codeable_concept_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -37477,18 +37596,18 @@ CREATE VIEW view_med_disp_full AS
                                                    FROM ( SELECT ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_max_dose_per_period_denominator t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS denominator,
                                                             ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_max_dose_per_period_numerator t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS numerator
@@ -37505,8 +37624,8 @@ CREATE VIEW view_med_disp_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_method_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -37517,9 +37636,9 @@ CREATE VIEW view_med_disp_full AS
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_disp_dispense_dosage_quantity t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS quantity,
@@ -37527,18 +37646,18 @@ CREATE VIEW view_med_disp_full AS
                                                    FROM ( SELECT ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_rate_denominator t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS denominator,
                                                             ( SELECT row_to_json(t_5.*, true) AS row_to_json
                                                                    FROM ( SELECT t5.units,
                                                                             t5.code,
+                                                                            t5.comparator,
                                                                             t5.system,
                                                                             t5.value,
-                                                                            t5.comparator,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_rate_numerator t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS numerator
@@ -37555,8 +37674,8 @@ CREATE VIEW view_med_disp_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_route_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -37575,8 +37694,8 @@ CREATE VIEW view_med_disp_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_site_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -37598,12 +37717,12 @@ CREATE VIEW view_med_disp_full AS
                                                                            FROM med_disp_dispense_dosage_timing_schedule_event t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS event,
                                                             ( SELECT row_to_json(t_5.*, true) AS row_to_json
-                                                                   FROM ( SELECT t5.units,
+                                                                   FROM ( SELECT t5."end",
+                                                                            t5.units,
                                                                             t5.frequency,
                                                                             t5.count,
                                                                             t5."when",
                                                                             t5.duration,
-                                                                            t5."end",
                                                                             t5._index
                                                                            FROM med_disp_dispense_dosage_timing_schedule_repeat t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS repeat
@@ -37643,9 +37762,9 @@ CREATE VIEW view_med_disp_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM med_disp_dispense_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -37666,8 +37785,8 @@ CREATE VIEW view_med_disp_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_disp_dispense_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37725,8 +37844,8 @@ CREATE VIEW view_med_disp_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_disp_substitution_reason_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37751,8 +37870,8 @@ CREATE VIEW view_med_disp_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_disp_substitution_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37769,8 +37888,10 @@ CREATE VIEW view_med_disp_full AS
                            FROM med_disp_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.status,
-            t1._index
-           FROM med_disp t1) t_1
+            t1._index,
+            tt.category
+           FROM (med_disp t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN med_disp res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -37831,9 +37952,9 @@ CREATE VIEW view_med_prs_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM med_prs_dispense_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -37859,8 +37980,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_additional_instructions_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37879,8 +38000,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_as_needed_codeable_concept_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37891,9 +38012,9 @@ CREATE VIEW view_med_prs_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM med_prs_dosage_instruction_dose_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS "doseQuantity",
@@ -37901,18 +38022,18 @@ CREATE VIEW view_med_prs_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_max_dose_per_period_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_max_dose_per_period_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -37929,8 +38050,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_method_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37942,18 +38063,18 @@ CREATE VIEW view_med_prs_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_rate_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_rate_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -37970,8 +38091,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_route_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -37990,8 +38111,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_site_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38013,12 +38134,12 @@ CREATE VIEW view_med_prs_full AS
                                                            FROM med_prs_dosage_instruction_timing_schedule_event t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS event,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
-                                                   FROM ( SELECT t4.units,
+                                                   FROM ( SELECT t4."end",
+                                                            t4.units,
                                                             t4.frequency,
                                                             t4.count,
                                                             t4."when",
                                                             t4.duration,
-                                                            t4."end",
                                                             t4._index
                                                            FROM med_prs_dosage_instruction_timing_schedule_repeat t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS repeat
@@ -38085,8 +38206,8 @@ CREATE VIEW view_med_prs_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM med_prs_reason_codeable_concept_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38112,8 +38233,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_substitution_reason_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38132,8 +38253,8 @@ CREATE VIEW view_med_prs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_prs_substitution_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38151,8 +38272,10 @@ CREATE VIEW view_med_prs_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.status,
             t1.date_written AS "dateWritten",
-            t1._index
-           FROM med_prs t1) t_1
+            t1._index,
+            tt.category
+           FROM (med_prs t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN med_prs res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -38220,8 +38343,8 @@ CREATE VIEW view_med_st_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_st_dosage_as_needed_codeable_concept_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38233,18 +38356,18 @@ CREATE VIEW view_med_st_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_st_dosage_max_dose_per_period_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_st_dosage_max_dose_per_period_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -38261,8 +38384,8 @@ CREATE VIEW view_med_st_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_st_dosage_method_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38273,9 +38396,9 @@ CREATE VIEW view_med_st_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM med_st_dosage_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -38283,18 +38406,18 @@ CREATE VIEW view_med_st_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_st_dosage_rate_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM med_st_dosage_rate_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -38311,8 +38434,8 @@ CREATE VIEW view_med_st_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_st_dosage_route_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38331,8 +38454,8 @@ CREATE VIEW view_med_st_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM med_st_dosage_site_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -38348,12 +38471,12 @@ CREATE VIEW view_med_st_full AS
                                                            FROM med_st_dosage_timing_event t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS event,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
-                                                   FROM ( SELECT t4.units,
+                                                   FROM ( SELECT t4."end",
+                                                            t4.units,
                                                             t4.frequency,
                                                             t4.count,
                                                             t4."when",
                                                             t4.duration,
-                                                            t4."end",
                                                             t4._index
                                                            FROM med_st_dosage_timing_repeat t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS repeat
@@ -38406,8 +38529,8 @@ CREATE VIEW view_med_st_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM med_st_reason_not_given_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38428,8 +38551,10 @@ CREATE VIEW view_med_st_full AS
                            FROM med_st_when_given t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "whenGiven",
             t1.was_not_given AS "wasNotGiven",
-            t1._index
-           FROM med_st t1) t_1
+            t1._index,
+            tt.category
+           FROM (med_st t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN med_st res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -38533,8 +38658,8 @@ CREATE VIEW view_media_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM media_subtype_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38559,8 +38684,8 @@ CREATE VIEW view_media_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM media_view_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38570,13 +38695,15 @@ CREATE VIEW view_media_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS view,
             t1.device_name AS "deviceName",
             t1.type,
+            t1.date_time AS "dateTime",
             t1.width,
             t1.length,
             t1.height,
             t1.frames,
-            t1.date_time AS "dateTime",
-            t1._index
-           FROM media t1) t_1
+            t1._index,
+            tt.category
+           FROM (media t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN media res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -38666,8 +38793,8 @@ CREATE VIEW view_message_header_full AS
                             t2.version,
                             t2.display,
                             t2.code,
-                            t2.system,
                             t2."primary",
+                            t2.system,
                             t2._index
                            FROM message_header_event t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS event,
@@ -38682,8 +38809,8 @@ CREATE VIEW view_message_header_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM message_header_reason_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38744,8 +38871,10 @@ CREATE VIEW view_message_header_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.identifier,
             t1."timestamp",
-            t1._index
-           FROM message_header t1) t_1
+            t1._index,
+            tt.category
+           FROM (message_header t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN message_header res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -38812,8 +38941,8 @@ CREATE VIEW view_obs_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM obs_body_site_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38852,8 +38981,8 @@ CREATE VIEW view_obs_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM obs_interpretation_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38872,8 +39001,8 @@ CREATE VIEW view_obs_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM obs_method_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38892,8 +39021,8 @@ CREATE VIEW view_obs_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM obs_name_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -38912,18 +39041,18 @@ CREATE VIEW view_obs_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM obs_reference_range_age_high t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS high,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM obs_reference_range_age_low t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS low
@@ -38932,18 +39061,18 @@ CREATE VIEW view_obs_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM obs_reference_range_high t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS high,
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM obs_reference_range_low t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS low,
@@ -38958,8 +39087,8 @@ CREATE VIEW view_obs_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM obs_reference_range_meaning_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39020,8 +39149,8 @@ CREATE VIEW view_obs_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM obs_value_codeable_concept_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -39038,9 +39167,9 @@ CREATE VIEW view_obs_full AS
             ( SELECT row_to_json(t_2.*, true) AS row_to_json
                    FROM ( SELECT t2.units,
                             t2.code,
+                            t2.comparator,
                             t2.system,
                             t2.value,
-                            t2.comparator,
                             t2._index
                            FROM obs_value_quantity t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "valueQuantity",
@@ -39048,18 +39177,18 @@ CREATE VIEW view_obs_full AS
                    FROM ( SELECT ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM obs_value_ratio_denominator t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS denominator,
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM obs_value_ratio_numerator t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS numerator
@@ -39069,9 +39198,9 @@ CREATE VIEW view_obs_full AS
                    FROM ( SELECT ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM obs_value_sampled_data_origin t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS origin,
@@ -39086,12 +39215,14 @@ CREATE VIEW view_obs_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "valueSampledData",
             t1.value_string AS "valueString",
             t1.comments,
+            t1.issued,
             t1.status,
             t1.reliability,
-            t1.issued,
             t1.applies_date_time AS "appliesDateTime",
-            t1._index
-           FROM obs t1) t_1
+            t1._index,
+            tt.category
+           FROM (obs t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN obs res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -39152,8 +39283,8 @@ CREATE VIEW view_operation_outcome_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM operation_outcome_issue_type t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS type,
@@ -39168,8 +39299,10 @@ CREATE VIEW view_operation_outcome_full AS
                             t2.status,
                             t2._index
                            FROM operation_outcome_text t2
-                          WHERE (t2._version_id = t1._version_id)) t_2) AS text
-           FROM operation_outcome t1) t_1
+                          WHERE (t2._version_id = t1._version_id)) t_2) AS text,
+            tt.category
+           FROM (operation_outcome t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN operation_outcome res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -39262,8 +39395,8 @@ CREATE VIEW view_order_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM order_reason_codeable_concept_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -39313,8 +39446,8 @@ CREATE VIEW view_order_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM order_when_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39330,12 +39463,12 @@ CREATE VIEW view_order_full AS
                                                            FROM order_when_schedule_event t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS event,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
-                                                   FROM ( SELECT t4.units,
+                                                   FROM ( SELECT t4."end",
+                                                            t4.units,
                                                             t4.frequency,
                                                             t4.count,
                                                             t4."when",
                                                             t4.duration,
-                                                            t4."end",
                                                             t4._index
                                                            FROM order_when_schedule_repeat t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS repeat
@@ -39344,8 +39477,10 @@ CREATE VIEW view_order_full AS
                            FROM order_when t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS "when",
             t1.date,
-            t1._index
-           FROM "order" t1) t_1
+            t1._index,
+            tt.category
+           FROM ("order" t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN "order" res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -39406,8 +39541,8 @@ CREATE VIEW view_order_response_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM order_response_authority_codeable_concept_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -39468,8 +39603,10 @@ CREATE VIEW view_order_response_full AS
             t1.description,
             t1.code,
             t1.date,
-            t1._index
-           FROM order_response t1) t_1
+            t1._index,
+            tt.category
+           FROM (order_response t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN order_response res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -39526,13 +39663,13 @@ CREATE VIEW view_organization_full AS
                                             t3._index
                                            FROM organization_address_period t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS period,
+                            t2.use,
                             t2.zip,
                             t2.text,
                             t2.state,
                             t2.line,
                             t2.country,
                             t2.city,
-                            t2.use,
                             t2._index
                            FROM organization_address t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS address,
@@ -39544,13 +39681,13 @@ CREATE VIEW view_organization_full AS
                                                             t4._index
                                                            FROM organization_contact_address_period t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS period,
+                                            t3.use,
                                             t3.zip,
                                             t3.text,
                                             t3.state,
                                             t3.line,
                                             t3.country,
                                             t3.city,
-                                            t3.use,
                                             t3._index
                                            FROM organization_contact_address t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS address,
@@ -39565,8 +39702,8 @@ CREATE VIEW view_organization_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM organization_contact_gender_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39601,8 +39738,8 @@ CREATE VIEW view_organization_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM organization_contact_purpose_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39687,8 +39824,8 @@ CREATE VIEW view_organization_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM organization_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -39698,8 +39835,10 @@ CREATE VIEW view_organization_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS type,
             t1.name,
             t1.active,
-            t1._index
-           FROM organization t1) t_1
+            t1._index,
+            tt.category
+           FROM (organization t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN organization res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -39766,8 +39905,8 @@ CREATE VIEW view_other_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM other_code_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -39808,8 +39947,10 @@ CREATE VIEW view_other_full AS
                            FROM other_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.created,
-            t1._index
-           FROM other t1) t_1
+            t1._index,
+            tt.category
+           FROM (other t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN other res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -39866,13 +40007,13 @@ CREATE VIEW view_patient_full AS
                                             t3._index
                                            FROM patient_address_period t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS period,
+                            t2.use,
                             t2.zip,
                             t2.text,
                             t2.state,
                             t2.line,
                             t2.country,
                             t2.city,
-                            t2.use,
                             t2._index
                            FROM patient_address t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS address,
@@ -39888,8 +40029,8 @@ CREATE VIEW view_patient_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM patient_animal_breed_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39908,8 +40049,8 @@ CREATE VIEW view_patient_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM patient_animal_gender_status_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39928,8 +40069,8 @@ CREATE VIEW view_patient_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM patient_animal_species_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -39956,8 +40097,8 @@ CREATE VIEW view_patient_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM patient_communication_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -39973,13 +40114,13 @@ CREATE VIEW view_patient_full AS
                                                             t4._index
                                                            FROM patient_contact_address_period t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS period,
+                                            t3.use,
                                             t3.zip,
                                             t3.text,
                                             t3.state,
                                             t3.line,
                                             t3.country,
                                             t3.city,
-                                            t3.use,
                                             t3._index
                                            FROM patient_contact_address t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS address,
@@ -39994,8 +40135,8 @@ CREATE VIEW view_patient_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM patient_contact_gender_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -40036,8 +40177,8 @@ CREATE VIEW view_patient_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM patient_contact_relationship_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -40071,8 +40212,8 @@ CREATE VIEW view_patient_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM patient_gender_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40128,8 +40269,8 @@ CREATE VIEW view_patient_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM patient_marital_status_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40183,14 +40324,16 @@ CREATE VIEW view_patient_full AS
                             t2._index
                            FROM patient_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
-            t1.multiple_birth_integer AS "multipleBirthInteger",
             t1.deceased_date_time AS "deceasedDateTime",
             t1.birth_date AS "birthDate",
+            t1.multiple_birth_integer AS "multipleBirthInteger",
             t1.multiple_birth_boolean AS "multipleBirthBoolean",
             t1.deceased_boolean AS "deceasedBoolean",
             t1.active,
-            t1._index
-           FROM patient t1) t_1
+            t1._index,
+            tt.category
+           FROM (patient t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN patient res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -40247,13 +40390,13 @@ CREATE VIEW view_practitioner_full AS
                                             t3._index
                                            FROM practitioner_address_period t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS period,
+                            t2.use,
                             t2.zip,
                             t2.text,
                             t2.state,
                             t2.line,
                             t2.country,
                             t2.city,
-                            t2.use,
                             t2._index
                            FROM practitioner_address t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS address,
@@ -40268,8 +40411,8 @@ CREATE VIEW view_practitioner_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM practitioner_communication_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40288,8 +40431,8 @@ CREATE VIEW view_practitioner_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM practitioner_gender_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40374,8 +40517,8 @@ CREATE VIEW view_practitioner_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM practitioner_qualification_code_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -40408,8 +40551,8 @@ CREATE VIEW view_practitioner_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM practitioner_role_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40428,8 +40571,8 @@ CREATE VIEW view_practitioner_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM practitioner_specialty_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40457,8 +40600,10 @@ CREATE VIEW view_practitioner_full AS
                            FROM practitioner_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.birth_date AS "birthDate",
-            t1._index
-           FROM practitioner t1) t_1
+            t1._index,
+            tt.category
+           FROM (practitioner t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN practitioner res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -40519,8 +40664,8 @@ CREATE VIEW view_procedure_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM procedure_body_site_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40539,8 +40684,8 @@ CREATE VIEW view_procedure_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM procedure_complication_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40591,8 +40736,8 @@ CREATE VIEW view_procedure_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM procedure_indication_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40618,8 +40763,8 @@ CREATE VIEW view_procedure_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM procedure_performer_role_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -40669,8 +40814,8 @@ CREATE VIEW view_procedure_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM procedure_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40681,8 +40826,10 @@ CREATE VIEW view_procedure_full AS
             t1.outcome,
             t1.notes,
             t1.follow_up AS "followUp",
-            t1._index
-           FROM procedure t1) t_1
+            t1._index,
+            tt.category
+           FROM (procedure t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN procedure res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -40743,8 +40890,8 @@ CREATE VIEW view_provenance_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM provenance_agent_role t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS role,
@@ -40758,8 +40905,8 @@ CREATE VIEW view_provenance_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM provenance_agent_type t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS type,
@@ -40780,8 +40927,8 @@ CREATE VIEW view_provenance_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM provenance_entity_type t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS type,
@@ -40814,8 +40961,8 @@ CREATE VIEW view_provenance_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM provenance_reason_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -40836,10 +40983,12 @@ CREATE VIEW view_provenance_full AS
                            FROM provenance_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.integrity_signature AS "integritySignature",
-            t1.policy,
             t1.recorded,
-            t1._index
-           FROM provenance t1) t_1
+            t1.policy,
+            t1._index,
+            tt.category
+           FROM (provenance t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN provenance res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -40909,8 +41058,10 @@ CREATE VIEW view_query_full AS
                            FROM query_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.identifier,
-            t1._index
-           FROM query t1) t_1
+            t1._index,
+            tt.category
+           FROM (query t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN query res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -40985,8 +41136,8 @@ CREATE VIEW view_questionnaire_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM questionnaire_group_name_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41005,8 +41156,8 @@ CREATE VIEW view_questionnaire_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM questionnaire_group_question_choice t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS choice,
@@ -41023,8 +41174,8 @@ CREATE VIEW view_questionnaire_full AS
                                                                             t5.version,
                                                                             t5.display,
                                                                             t5.code,
-                                                                            t5.system,
                                                                             t5."primary",
+                                                                            t5.system,
                                                                             t5._index
                                                                            FROM questionnaire_group_question_name_cd t5
                                                                           WHERE ((t5._version_id = t1._version_id) AND (t5._parent_id = t4._id))) t_5) AS coding,
@@ -41041,12 +41192,12 @@ CREATE VIEW view_questionnaire_full AS
                                             t3.text,
                                             t3.remarks,
                                             t3.answer_string AS "answerString",
-                                            t3.answer_integer AS "answerInteger",
-                                            t3.answer_decimal AS "answerDecimal",
                                             t3.answer_instant AS "answerInstant",
                                             t3.answer_date_time AS "answerDateTime",
+                                            t3.answer_integer AS "answerInteger",
                                             t3.answer_boolean AS "answerBoolean",
                                             t3.answer_date AS "answerDate",
+                                            t3.answer_decimal AS "answerDecimal",
                                             t3._index
                                            FROM questionnaire_group_question t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS question,
@@ -41092,8 +41243,8 @@ CREATE VIEW view_questionnaire_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM questionnaire_name_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -41121,8 +41272,10 @@ CREATE VIEW view_questionnaire_full AS
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.status,
             t1.authored,
-            t1._index
-           FROM questionnaire t1) t_1
+            t1._index,
+            tt.category
+           FROM (questionnaire t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN questionnaire res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -41179,13 +41332,13 @@ CREATE VIEW view_related_person_full AS
                                             t3._index
                                            FROM related_person_address_period t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS period,
+                            t2.use,
                             t2.zip,
                             t2.text,
                             t2.state,
                             t2.line,
                             t2.country,
                             t2.city,
-                            t2.use,
                             t2._index
                            FROM related_person_address t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS address,
@@ -41200,8 +41353,8 @@ CREATE VIEW view_related_person_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM related_person_gender_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -41273,8 +41426,8 @@ CREATE VIEW view_related_person_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM related_person_relationship_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -41300,8 +41453,10 @@ CREATE VIEW view_related_person_full AS
                             t2.status,
                             t2._index
                            FROM related_person_text t2
-                          WHERE (t2._version_id = t1._version_id)) t_2) AS text
-           FROM related_person t1) t_1
+                          WHERE (t2._version_id = t1._version_id)) t_2) AS text,
+            tt.category
+           FROM (related_person t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN related_person res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -41363,8 +41518,8 @@ CREATE VIEW view_security_event_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM security_event_event_subtype_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41383,8 +41538,8 @@ CREATE VIEW view_security_event_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM security_event_event_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41393,9 +41548,9 @@ CREATE VIEW view_security_event_full AS
                                            FROM security_event_event_type t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS type,
                             t2.outcome_desc AS "outcomeDesc",
+                            t2.date_time AS "dateTime",
                             t2.outcome,
                             t2.action,
-                            t2.date_time AS "dateTime",
                             t2._index
                            FROM security_event_event t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS event,
@@ -41443,8 +41598,8 @@ CREATE VIEW view_security_event_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM security_event_object_sensitivity_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41472,8 +41627,8 @@ CREATE VIEW view_security_event_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM security_event_participant_media t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS media,
@@ -41500,8 +41655,8 @@ CREATE VIEW view_security_event_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM security_event_participant_role_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41527,8 +41682,8 @@ CREATE VIEW view_security_event_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM security_event_source_type t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS type,
@@ -41542,8 +41697,10 @@ CREATE VIEW view_security_event_full AS
                             t2.status,
                             t2._index
                            FROM security_event_text t2
-                          WHERE (t2._version_id = t1._version_id)) t_2) AS text
-           FROM security_event t1) t_1
+                          WHERE (t2._version_id = t1._version_id)) t_2) AS text,
+            tt.category
+           FROM (security_event t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN security_event res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -41637,8 +41794,8 @@ CREATE VIEW view_specimen_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM specimen_collection_method_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41649,9 +41806,9 @@ CREATE VIEW view_specimen_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM specimen_collection_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -41666,8 +41823,8 @@ CREATE VIEW view_specimen_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM specimen_collection_source_site_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41690,9 +41847,9 @@ CREATE VIEW view_specimen_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM specimen_container_capacity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS capacity,
@@ -41719,9 +41876,9 @@ CREATE VIEW view_specimen_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM specimen_container_specimen_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS "specimenQuantity",
@@ -41736,8 +41893,8 @@ CREATE VIEW view_specimen_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM specimen_container_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41810,8 +41967,8 @@ CREATE VIEW view_specimen_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM specimen_treatment_procedure_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -41834,8 +41991,8 @@ CREATE VIEW view_specimen_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM specimen_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -41844,8 +42001,10 @@ CREATE VIEW view_specimen_full AS
                            FROM specimen_type t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS type,
             t1.received_time AS "receivedTime",
-            t1._index
-           FROM specimen t1) t_1
+            t1._index,
+            tt.category
+           FROM (specimen t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN specimen res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -41900,18 +42059,18 @@ CREATE VIEW view_substance_full AS
                                    FROM ( SELECT ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM substance_ingredient_quantity_denominator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS denominator,
                                             ( SELECT row_to_json(t_4.*, true) AS row_to_json
                                                    FROM ( SELECT t4.units,
                                                             t4.code,
+                                                            t4.comparator,
                                                             t4.system,
                                                             t4.value,
-                                                            t4.comparator,
                                                             t4._index
                                                            FROM substance_ingredient_quantity_numerator t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS numerator
@@ -41949,9 +42108,9 @@ CREATE VIEW view_substance_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM substance_instance_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -41976,8 +42135,8 @@ CREATE VIEW view_substance_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM substance_type_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -41986,8 +42145,10 @@ CREATE VIEW view_substance_full AS
                            FROM substance_type t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS type,
             t1.description,
-            t1._index
-           FROM substance t1) t_1
+            t1._index,
+            tt.category
+           FROM (substance t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN substance res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -42067,9 +42228,9 @@ CREATE VIEW view_supply_full AS
                             ( SELECT row_to_json(t_3.*, true) AS row_to_json
                                    FROM ( SELECT t3.units,
                                             t3.code,
+                                            t3.comparator,
                                             t3.system,
                                             t3.value,
-                                            t3.comparator,
                                             t3._index
                                            FROM supply_dispense_quantity t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS quantity,
@@ -42102,8 +42263,8 @@ CREATE VIEW view_supply_full AS
                                                             t4.version,
                                                             t4.display,
                                                             t4.code,
-                                                            t4.system,
                                                             t4."primary",
+                                                            t4.system,
                                                             t4._index
                                                            FROM supply_dispense_type_cd t4
                                                           WHERE ((t4._version_id = t1._version_id) AND (t4._parent_id = t3._id))) t_4) AS coding,
@@ -42158,8 +42319,8 @@ CREATE VIEW view_supply_full AS
                                             t3.version,
                                             t3.display,
                                             t3.code,
-                                            t3.system,
                                             t3."primary",
+                                            t3.system,
                                             t3._index
                                            FROM supply_kind_cd t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS coding,
@@ -42186,8 +42347,10 @@ CREATE VIEW view_supply_full AS
                            FROM supply_text t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS text,
             t1.status,
-            t1._index
-           FROM supply t1) t_1
+            t1._index,
+            tt.category
+           FROM (supply t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN supply res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -42430,8 +42593,8 @@ CREATE VIEW view_vs_full AS
                                            FROM vs_define_concept t3
                                           WHERE ((t3._version_id = t1._version_id) AND (t3._parent_id = t2._id))) t_3) AS concept,
                             t2.version,
-                            t2.system,
                             t2.case_sensitive AS "caseSensitive",
+                            t2.system,
                             t2._index
                            FROM vs_define t2
                           WHERE (t2._version_id = t1._version_id)) t_2) AS define,
@@ -42497,8 +42660,10 @@ CREATE VIEW view_vs_full AS
             t1.date,
             t1.extensible,
             t1.experimental,
-            t1._index
-           FROM vs t1) t_1
+            t1._index,
+            tt.category
+           FROM (vs t1
+      LEFT JOIN view_tags tt USING (_version_id))) t_1
    JOIN vs res_table ON ((res_table._version_id = t_1._version_id)));
 
 
@@ -61241,6 +61406,14 @@ COPY supply_text (_version_id, _id, _parent_id, _type, _unknown_attributes, _ind
 
 
 --
+-- Data for Name: tag; Type: TABLE DATA; Schema: fhir; Owner: -
+--
+
+COPY tag (_id, _version_id, _logical_id, scheme, term, label) FROM stdin;
+\.
+
+
+--
 -- Data for Name: vs; Type: TABLE DATA; Schema: fhir; Owner: -
 --
 
@@ -76735,6 +76908,14 @@ ALTER TABLE ONLY supply
 
 ALTER TABLE ONLY supply_text
     ADD CONSTRAINT supply_text_pkey PRIMARY KEY (_id);
+
+
+--
+-- Name: tag_pkey; Type: CONSTRAINT; Schema: fhir; Owner: -; Tablespace: 
+--
+
+ALTER TABLE ONLY tag
+    ADD CONSTRAINT tag_pkey PRIMARY KEY (_id);
 
 
 --
