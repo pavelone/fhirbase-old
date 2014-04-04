@@ -1,18 +1,18 @@
 require 'faker'
 
 def gen(number, &block)
+  n = if number.is_a?(Range)
+        number.last < Float::INFINITY ? number.last : number
+      else
+        number
+      end
+  min = number.is_a?(Range) ? number.first : 0
 
-  res = (rand(number + 1)).times.map(&block)
+  res = (rand(n + 1) + min).times.map(&block)
   res.empty? ? nil : res
 end
 
 def gen_identifier(number = 1)
-  n = if number.is_a?(Range)
-        number.last < Float::INFINITY ? number.last : 2 #FIXME: should be rundom
-      else
-        number
-      end
-
   tpls = [
     { use: 'official', label: 'BSN', system: 'urn:oid:2.16.840.1.113883.2.4.6.3', value: '123123' },
     { use: "official", label:"SSN", system:"urn:oid:2.16.840.1.113883.2.4.6.7", value:"123456789" }]
@@ -22,20 +22,7 @@ def gen_identifier(number = 1)
   end
 end
 
-def gen_managingOrganization(number = 1)
-  res = {}
-  res[:identifier] = gen_identifier(0..Float::INFINITY) # Identifier Identifies this organization  across multiple systems
-  zero_or_one do
-    res[:name] =  Faker::Company.name # Name used for the organization
-  end
-  zero_or_one do
-    res[:type] = gen_codeable_concept(0..1) # Kind of organization
-  end
-
-  res
-end
-
-def gen_active(number = 1) #0..1
+def gen_active(number = 1)
   [true, false].sample
 end
 
@@ -44,11 +31,11 @@ def gen_codeable_concept(number = 1)
   # object :coding, (0..Float::INFINITY) do
   #   # Coding Code defined by a terminology system
   # end
-  zero_or_one do
+  gen(0..1) do
     res[:text] = Faker::Lorem.sentence # Plain text representation of the concept
   end
 
-  res
+  res unless res.empty?
 end
 
 def gen_category(number = 1)
@@ -69,7 +56,7 @@ def gen_name(number = 1)
   end
 end
 
-def gen_telecom(number)
+def gen_telecom(number = 1)
   gen(2) do
     [
       {
@@ -94,11 +81,11 @@ def gen_gender(number)
   end
 end
 
-def gen_birthDate(number)
+def gen_birthDate(number = 1)
   Time.at(rand * Time.now.to_i)
 end
 
-def deceasedBoolean
+def gen_deceasedBoolean(number = 1)
   rand % 100 == 0
 end
 
@@ -115,7 +102,6 @@ def address
   end
 end
 
-def gen_deceasedBoolean(number = 1) end
 def gen_address(number = 1) end
 def gen_maritalStatus(number = 1) end
 def gen_photo(number = 1) end
@@ -123,10 +109,23 @@ def gen_contact(number = 1) end
 def gen_communication(number = 1) end
 def gen_careProvider(number = 1) end
 
-def zero_or_one(&block)
-  return if [true, false].sample
+def gen_managingOrganization(number = 1)
+  res = {}
+  identifier = gen_identifier(0..Float::INFINITY)
+  if identifier
+    res[:identifier] = identifier # Identifier Identifies this organization  across multiple systems
+  end
+  gen(0..1) do
+    res[:name] =  Faker::Company.name # Name used for the organization
+  end
+  gen(0..1) do
+    type = gen_codeable_concept(0..1)
+    if type
+      res[:type] = type # Kind of organization
+    end
+  end
 
-  block.call
+  res unless res.empty?
 end
 
 def gen_patient(number)
