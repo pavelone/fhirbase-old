@@ -155,6 +155,23 @@ def gen_location(number = 1..1)
     res[:identifier] = gen_identifier(0..1) # Unique code or number identifying the location to its users
     res[:name] = gen(0..1) { Faker::Lorem.word } # Name of the location as used by humans
     res[:description] = gen(0..1) { Faker::Lorem.paragraphs } # Description of the Location, which helps in finding or referencing the place
+    res[:type] = gen_codeable_concept(0..1) # Indicates the type of function performed at the location
+    res[:telecom] = gen_contact(0..Float::INFINITY) # Contact details of the location
+    res[:address] = gen_address(0..1) # Physical location
+    res[:physicalType] = gen_codeable_concept(0..1) # Physical form of the location
+    res[:position] = gen_position(0..1) # The absolute geographic location
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+
+def gen_position(number = 1..1)
+  gen(number) do
+    res = {}
+    res[:longitude] = gen(1..1) { Faker::Address.longitude } # Longitude as expressed in KML
+    res[:latitude] = gen(1..1) { Faker::Address.latitude } # Latitude as expressed in KML
+    res[:altitude] = gen(0..1) { rand * 100 } # Altitude as expressed in KML
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
