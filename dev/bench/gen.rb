@@ -44,8 +44,8 @@ def gen_category(number = 1..1)
   end
 end
 
-def gen_name(number = 1..1)
-  gen(1) do 
+def gen_HumanName(number = 1..1)
+  gen(number) do
     {
       use: %w(usual  official  temp  nickname  anonymous  old  maiden).sample,
       text: Faker::Name.name,
@@ -55,6 +55,7 @@ def gen_name(number = 1..1)
     }
   end
 end
+alias :gen_name :gen_HumanName
 
 def gen_telecom(number = 1..1)
   gen(2) do
@@ -107,9 +108,27 @@ def gen_contact(number = 1..1)
     res = {}
 
     res[:system] = gen_code(0..1, restrictions: %w(phone fax email url))
-    res[:value] = gen(0..1) { Faker::Lorem.sentence } # The actual contact details -->
+    res[:value] = gen(0..1) { Faker::Lorem.sentence } # The actual contact details
     res[:use] = gen_code(0..1, restrictions: %w(home work temp old mobile)) # purpose of this address
-    # res[:period] = ><!-- 0..1 # Period Time period when the contact was/is in use
+    res[:period] = gen_period(0..1) # Period Time period when the contact was/is in use
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+
+def gen_period(number = 1..1)
+  datetime_min = Time.new(2000)
+  datetime_max = Time.new(2010)
+  rand_datetime = -> do
+    Time.at((datetime_max.to_f - datetime_min.to_f) * rand + datetime_min.to_f)
+  end
+
+  gen(number) do
+    res = {}
+
+    res[:start] = gen(0..1) { rand_datetime.call } # Starting time with inclusive boundary
+    res[:end]   = gen(0..1) { rand_datetime.call } # End time with inclusive boundary, if not ongoing
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
@@ -130,26 +149,50 @@ def gen_code(number = 1, opts = {})
   end
 end
 
-def gen_address(number = 1..1) end
-def gen_maritalStatus(number = 1..1) end
-def gen_photo(number = 1..1) end
-def gen_communication(number = 1..1) end
-def gen_careProvider(number = 1..1) end
-
-def gen_managingOrganization(number = 1..1)
+def gen_location(number = 1..1)
   gen(number) do
     res = {}
-    res[:identifier] = gen_identifier(0..Float::INFINITY) # Identifier Identifies this organization  across multiple systems
-    res[:name] = gen(0..1) do
-      Faker::Company.name # Name used for the organization
-    end
-    res[:type] = gen_codeable_concept(0..1) # Kind of organization
-    res[:telecom] = gen_contact(0..Float::INFINITY) # Contact A contact detail for the organization
+    res[:identifier] = gen_identifier(0..1) # Unique code or number identifying the location to its users
+    res[:name] = gen(0..1) { Faker::Lorem.word } # Name of the location as used by humans
+    res[:description] = gen(0..1) { Faker::Lorem.paragraphs } # Description of the Location, which helps in finding or referencing the place
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
   end
 end
+
+def gen_maritalStatus(number = 1..1) end
+def gen_photo(number = 1..1) end
+def gen_communication(number = 1..1) end
+def gen_careProvider(number = 1..1) end
+
+def gen_organization(number = 1..1)
+  gen(number) do
+    res = {}
+    res[:identifier] = gen_identifier(0..Float::INFINITY) # Identifier Identifies this organization  across multiple systems
+    res[:name] = gen(0..1) { Faker::Company.name } # Name used for the organization
+    res[:type] = gen_codeable_concept(0..1) # Kind of organization
+    res[:telecom] = gen_contact(0..Float::INFINITY) # Contact A contact detail for the organization
+    res[:address] = gen_address(0..Float::INFINITY) # Address An address for the organization </address>
+    res[:partOf] = gen_organization(0..1) # The organization of which this organization forms a part
+    res[:contact] = gen(0..Float::INFINITY) do # Contact for the organization for a certain purpose
+      contact = {}
+      contact[:purpose] = gen_codeable_concept(0..1) # The type of contact
+      contact[:name] = gen_HumanName(0..1) # A name associated with the contact
+      contact[:telecom] = gen_contact(0..Float::INFINITY) # Contact details (telephone, email, etc)  for a contact
+      contact[:address] = gen_address(0..1) # Visiting or postal addresses for the contact
+      contact[:gender] = gen_codeable_concept(0..1) # Gender for administrative purposes
+      contact.delete_if { |_, v| !v }
+      contact unless contact.empty?
+    end
+     res[:location] = gen_location(0..Float::INFINITY) # Location(s) the organization uses to provide services
+     res[:active] = gen_active(0..1) # Whether the organization's record is still in active use
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+alias :gen_managingOrganization :gen_organization
 
 def gen_patient(number)
   gen(number) do
