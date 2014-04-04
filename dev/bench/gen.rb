@@ -1,13 +1,14 @@
 require 'faker'
 
 def gen(number, &block)
+
   res = (rand(number + 1)).times.map(&block)
   res.empty? ? nil : res
 end
 
 def gen_identifier(number = 1)
   n = if number.is_a?(Range)
-        number.last < Float::INFINITY ? number.last : 9
+        number.last < Float::INFINITY ? number.last : 2 #FIXME: should be rundom
       else
         number
       end
@@ -21,22 +22,15 @@ def gen_identifier(number = 1)
   end
 end
 
-def gen_category(number = 1) end
-def gen_name(number = 1) end
-def gen_telecom(number = 1) end
-def gen_gender(number = 1) end
-def gen_birthDate(number = 1) end
-def gen_deceasedBoolean(number = 1) end
-def gen_address(number = 1) end
-def gen_maritalStatus(number = 1) end
-def gen_photo(number = 1) end
-def gen_contact(number = 1) end
-def gen_communication(number = 1) end
-def gen_careProvider(number = 1) end
-
-def gen_managingOrganization(number = 1) #0..1
+def gen_managingOrganization(number = 1)
   res = {}
-
+  res[:identifier] = gen_identifier(0..Float::INFINITY) # Identifier Identifies this organization  across multiple systems
+  zero_or_one do
+    res[:name] =  Faker::Company.name # Name used for the organization
+  end
+  zero_or_one do
+    res[:type] = gen_codeable_concept(0..1) # Kind of organization
+  end
 
   res
 end
@@ -47,21 +41,23 @@ end
 
 def gen_codeable_concept(number = 1)
   res = {}
-  object :coding, (0..Float::INFINITY) do
-    # Coding Code defined by a terminology system
+  # object :coding, (0..Float::INFINITY) do
+  #   # Coding Code defined by a terminology system
+  # end
+  zero_or_one do
+    res[:text] = Faker::Lorem.sentence # Plain text representation of the concept
   end
-  res = string :text, 0..1 # Plain text representation of the concept
 
   res
 end
 
-def gen_category
+def gen_category(number = 1)
   gen(3) do
     { scheme: Faker::Internet.url('http://hl7.org/fhir/tag/'), term: Faker::Internet.url, label: Faker::Lorem.sentence }
   end
 end
 
-def gen_name
+def gen_name(number = 1)
   gen(1) do 
     {
       use: %w(usual  official  temp  nickname  anonymous  old  maiden).sample,
@@ -73,7 +69,7 @@ def gen_name
   end
 end
 
-def gen_telecom
+def gen_telecom(number)
   gen(2) do
     [
       {
@@ -90,15 +86,15 @@ def gen_telecom
   end
 end
 
-def gen_gender
+def gen_gender(number)
   gen(1) do
     {
-      coding: [{ system: 'http://hl7.org/fhir/v3/AdministrativeGender', code: %w(M F).sample, display: %(Male Female).sample }] # bug
+      coding: [{ system: 'http://hl7.org/fhir/v3/AdministrativeGender', code: %w(M F).sample, display: %w(Male Female).sample }] # bug
     }
   end
 end
 
-def gen_birthDate
+def gen_birthDate(number)
   Time.at(rand * Time.now.to_i)
 end
 
@@ -117,6 +113,20 @@ def address
     res[:text] = [res[:line].join("\n"), res[:state], res[:zip]].join(", ")
     res
   end
+end
+
+def gen_deceasedBoolean(number = 1) end
+def gen_address(number = 1) end
+def gen_maritalStatus(number = 1) end
+def gen_photo(number = 1) end
+def gen_contact(number = 1) end
+def gen_communication(number = 1) end
+def gen_careProvider(number = 1) end
+
+def zero_or_one(&block)
+  return if [true, false].sample
+
+  block.call
 end
 
 def gen_patient(number)
