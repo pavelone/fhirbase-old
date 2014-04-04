@@ -160,6 +160,11 @@ def gen_location(number = 1..1)
     res[:address] = gen_address(0..1) # Physical location
     res[:physicalType] = gen_codeable_concept(0..1) # Physical form of the location
     res[:position] = gen_position(0..1) # The absolute geographic location
+    res[:managingOrganization] = gen_organization(0..1) # The organization that is responsible for the provisioning and upkeep of the location
+    res[:status] = gen_code(0..1, restrictions: %w(active suspended inactive))
+    # SystemStackError: stack level too deep
+    # res[:partOf] = gen_location(0..1) # Another Location which this Location is physically part of
+    res[:mode] = gen_code(0..1, restrictions: %w(instance kind))
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
