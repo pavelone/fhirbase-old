@@ -8,7 +8,7 @@ def gen(number, &block)
       end
   min = number.is_a?(Range) ? number.first : 0
 
-  res = (rand(n + 1) + min).times.map(&block)
+  res = (rand(n + 1) + min).times.map(&block).compact
   res.empty? ? nil : res
 end
 
@@ -22,11 +22,11 @@ def gen_identifier(number = 3)
   end
 end
 
-def gen_active(number = 1)
+def gen_active(number = 1..1)
   [true, false].sample
 end
 
-def gen_codeable_concept(number = 1)
+def gen_codeable_concept(number = 1..1)
   res = {}
   # object :coding, (0..Float::INFINITY) do
   #   # Coding Code defined by a terminology system
@@ -38,13 +38,13 @@ def gen_codeable_concept(number = 1)
   res unless res.empty?
 end
 
-def gen_category(number = 1)
+def gen_category(number = 1..1)
   gen(3) do
     { scheme: Faker::Internet.url('http://hl7.org/fhir/tag/'), term: Faker::Internet.url, label: Faker::Lorem.sentence }
   end
 end
 
-def gen_name(number = 1)
+def gen_name(number = 1..1)
   gen(1) do 
     {
       use: %w(usual  official  temp  nickname  anonymous  old  maiden).sample,
@@ -56,7 +56,7 @@ def gen_name(number = 1)
   end
 end
 
-def gen_telecom(number = 1)
+def gen_telecom(number = 1..1)
   gen(2) do
     [
       {
@@ -81,16 +81,16 @@ def gen_gender(number)
   end
 end
 
-def gen_birthDate(number = 1)
+def gen_birthDate(number = 1..1)
   Time.at(rand * Time.now.to_i)
 end
 
-def gen_deceasedBoolean(number = 1)
+def gen_deceasedBoolean(number = 1..1)
   rand % 100 == 0
 end
 
-def address
-  gen(2) do
+def gen_address(number = 2)
+  gen(number) do
     res = { use: %w(home work temp old).sample,
       line: [Faker::Address.street_address],
       city: Faker::Address.city,
@@ -102,14 +102,41 @@ def address
   end
 end
 
-def gen_address(number = 1) end
-def gen_maritalStatus(number = 1) end
-def gen_photo(number = 1) end
-def gen_contact(number = 1) end
-def gen_communication(number = 1) end
-def gen_careProvider(number = 1) end
+def gen_contact(number = 1..1)
+  gen(number) do
+    res = {}
 
-def gen_managingOrganization(number = 1)
+    res[:system] = gen_code(0..1, restrictions: %w(phone fax email url))
+    res[:value] = gen(0..1) { Faker::Lorem.sentence } # The actual contact details -->
+    res[:use] = gen_code(0..1, restrictions: %w(home work temp old mobile)) # purpose of this address
+    # res[:period] = ><!-- 0..1 # Period Time period when the contact was/is in use
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+
+def gen_code(number = 1, opts = {})
+  restrictions = opts[:restrictions]
+  if !restrictions.is_a?(Array)
+    restrictions = [restrictions]
+  end
+  if restrictions.empty?
+    restrictions = Faker::Lorem.words
+  end
+
+  gen(number) do
+    restrictions.sample
+  end
+end
+
+def gen_address(number = 1..1) end
+def gen_maritalStatus(number = 1..1) end
+def gen_photo(number = 1..1) end
+def gen_communication(number = 1..1) end
+def gen_careProvider(number = 1..1) end
+
+def gen_managingOrganization(number = 1..1)
   gen(number) do
     res = {}
     res[:identifier] = gen_identifier(0..Float::INFINITY) # Identifier Identifies this organization  across multiple systems
