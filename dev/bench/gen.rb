@@ -2,7 +2,7 @@ require 'faker'
 
 def gen(number, &block)
   n = if number.is_a?(Range)
-        number.last < Float::INFINITY ? number.last : number
+        number.last < Float::INFINITY ? number.last : 9
       else
         number
       end
@@ -12,12 +12,12 @@ def gen(number, &block)
   res.empty? ? nil : res
 end
 
-def gen_identifier(number = 1)
+def gen_identifier(number = 3)
   tpls = [
     { use: 'official', label: 'BSN', system: 'urn:oid:2.16.840.1.113883.2.4.6.3', value: '123123' },
     { use: "official", label:"SSN", system:"urn:oid:2.16.840.1.113883.2.4.6.7", value:"123456789" }]
 
-  gen(3) do
+  gen(number) do
     tpls.sample.merge value: (1000000 + rand(1000000)).to_s, use: %w(usual  official  temp  secondary).sample
   end
 end
@@ -110,22 +110,18 @@ def gen_communication(number = 1) end
 def gen_careProvider(number = 1) end
 
 def gen_managingOrganization(number = 1)
-  res = {}
-  identifier = gen_identifier(0..Float::INFINITY)
-  if identifier
-    res[:identifier] = identifier # Identifier Identifies this organization  across multiple systems
-  end
-  gen(0..1) do
-    res[:name] =  Faker::Company.name # Name used for the organization
-  end
-  gen(0..1) do
-    type = gen_codeable_concept(0..1)
-    if type
-      res[:type] = type # Kind of organization
+  gen(number) do
+    res = {}
+    res[:identifier] = gen_identifier(0..Float::INFINITY) # Identifier Identifies this organization  across multiple systems
+    res[:name] = gen(0..1) do
+      Faker::Company.name # Name used for the organization
     end
-  end
+    res[:type] = gen_codeable_concept(0..1) # Kind of organization
+    res[:telecom] = gen_contact(0..Float::INFINITY) # Contact A contact detail for the organization
 
-  res unless res.empty?
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
 end
 
 def gen_patient(number)
