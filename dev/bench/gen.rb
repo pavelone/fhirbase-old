@@ -117,34 +117,33 @@ def address
     res[:text] = [res[:line].join("\n"), res[:state], res[:zip]].join(", ")
     res
   end
+end
 
 def gen_patient(number)
   gen(number) do
     res = { resourceType: 'Patient' }
-  {
-    identifier:           0..Float::INFINITY,
-    category:             0, #wtf?
-    name:                 0..Float::INFINITY,
-    telecom:              0..Float::INFINITY,
-    gender:               0..1,
-    birthDate:            0..1,
-    deceasedBoolean:      0..1,
-    address:              0..Float::INFINITY,
-    maritalStatus:        0..1,
-    photo:                0..Float::INFINITY,
-    contact:              0..Float::INFINITY,
-    communication:        0..Float::INFINITY,
-    careProvider:         0..Float::INFINITY,
-    managingOrganization: 0..1,
-    active:               0..1
-  }.each do |name, number|
-    res[name] = send("gen_#{name}", number)
-    %i(identifier category name telecom gender birthDate deceasedBoolean address maritalStatus photo contact communication).each do |name|
-      res[name] = send("gen_#{name}")
+
+    {
+      identifier:           0..Float::INFINITY,
+      category:             0, #wtf?
+      name:                 0..Float::INFINITY,
+      telecom:              0..Float::INFINITY,
+      gender:               0..1,
+      birthDate:            0..1,
+      deceasedBoolean:      0..1,
+      address:              0..Float::INFINITY,
+      maritalStatus:        0..1,
+      photo:                0..Float::INFINITY,
+      contact:              0..Float::INFINITY,
+      communication:        0..Float::INFINITY,
+      careProvider:         0..Float::INFINITY,
+      managingOrganization: 0..1,
+      active:               0..1
+    }.each do |name, number|
+      res[name] = send("gen_#{name}", number)
+      res.delete_if { |k, v| v.nil? }
     end
-    res.delete_if { |k, v| v.nil? }
+
+    res
   end
-
-  res
 end
-
