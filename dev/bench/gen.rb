@@ -32,15 +32,39 @@ def gen_uri(number = 1..1)
   gen(number) { Faker::Internet.url }
 end
 
-def gen_uri(number = 1..1)
-  gen(number) { Faker::Internet.word }
+def gen_string(number = 1..1)
+  gen(number) { Faker::Lorem.word }
+end
+
+def gen_text(number = 1..1)
+  gen(number) { Faker::Lorem.paragraphs }
+end
+
+def gen_datetime(number = 1..1)
+  datetime_min = Time.new(2000)
+  datetime_max = Time.new(2010)
+
+  gen(number) do
+    Time.at((datetime_max.to_f - datetime_min.to_f) * rand + datetime_min.to_f)
+  end
+end
+alias :gen_date :gen_datetime
+alias :gen_dateTime :gen_datetime
+
+def gen_period(number = 1..1)
+  gen(number) do
+    res = {}
+    res[:start] = gen(0..1) { gen_datetime } # Starting time with inclusive boundary
+    res[:end]   = gen(0..1) { gen_datetime } # End time with inclusive boundary, if not ongoing
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
 end
 
 def gen_codeable_concept(number = 1..1)
   res = {}
-  # object :coding, (0..Float::INFINITY) do
-  #   # Coding Code defined by a terminology system
-  # end
+  res[:coding] = gen_coding(0..Float::INFINITY) # Coding Code defined by a terminology system
   res[:text] = gen(0..1) { Faker::Lorem.sentence } # Plain text representation of the concept
 
   res unless res.empty?
@@ -61,16 +85,62 @@ def gen_coding(number = 1..1)
   end
 end
 
-def gen_value_set(number = 1..1)
+def gen_valueset(number = 1..1)
   gen(number) do
     res = {}
     res[:identifier] = gen_string(0..1) # Logical id to reference this value set
+    res[:version] = gen_string(0..1) # Logical id for this version of the value set
+    res[:name] = gen_string(1..1) # Informal name for this value set
+    res[:publisher] = gen_string(0..1) # Name of the publisher (Organization or individual)
+    res[:telecom] = gen_contact(0..Float::INFINITY) # Contact information of the publisher</telecom>
+    res[:description] = gen_text(1..1) # Human language description of the value set
+    res[:copyright] = gen_string(0..1) # About the value set or its content
+    res[:status] = gen_code(1..1, restrictions: %w(draft active retired))
+    res[:experimental] = gen_boolean(0..1) # If for testing purposes, not real usage
+    res[:extensible] = gen_boolean(0..1) # Whether this is intended to be used with an extensible binding
+    res[:date] = gen_date(0..1) # Date for given status
+    # <define>  <!-- ?? 0..1 When value set defines its own codes
+    #  :system value="[uri]"/><!-- 1..1 URI to identify the code system
+    #  :version value="[string]"/><!-- 0..1 Version of this system
+    #  :caseSensitive value="[boolean]"/><!-- 0..1 If code comparison is case sensitive
+    #  :concept>  <!-- 0..* Concepts in the code system
+    #   :code value="[code]"/><!-- 1..1 Code that identifies concept
+    #   :abstract value="[boolean]"/><!-- 0..1 If this code is not for use as a real concept
+    #   :display value="[string]"/><!-- 0..1 Text to Display to the user
+    #   :definition value="[string]"/><!-- 0..1 Formal Definition
+    #   :concept><!-- 0..* Content as for ValueSet.define.concept Child Concepts (is-a / contains) </concept>
+    #  </concept>
+    # </define>
+    # <compose>  <!-- ?? 0..1 When value set includes codes from elsewhere
+    #  :import value="[uri]"/><!-- ?? 0..* Import the contents of another value set
+    #  :include>  <!-- ?? 0..* Include one or more codes from a code system
+    #   :system value="[uri]"/><!-- 1..1 The system the codes come from
+    #   :version value="[string]"/><!-- 0..1 Specific version of the code system referred to
+    #   :code value="[code]"/><!-- 0..* Code or concept from system
+    #   :filter>  <!-- 0..* Select codes/concepts by their properties (including relationships)
+    #    :property value="[code]"/><!-- 1..1 A property defined by the code system
+    #    :op value="[code]"/><!-- 1..1 = | is-a | is-not-a | regex | in | not in
+    #    :value value="[code]"/><!-- 1..1 Code from the system, or regex criteria
+    #   </filter>
+    #  </include>
+    #  :exclude><!-- ?? 0..* Content as for ValueSet.compose.include Explicitly exclude codes </exclude>
+    # </compose>
+    # :expansion>  <!-- ?? 0..1 When value set is an expansion
+    #  :identifier><!-- 0..1 Identifier Uniquely identifies this expansion </identifier>
+    #  :timestamp value="[instant]"/><!-- 1..1 Time valueset expansion happened
+    #  :contains>  <!-- 0..* Codes in the value set
+    #   :system value="[uri]"/><!-- 0..1 System value for the code
+    #   :code value="[code]"/><!-- ?? 0..1 Code - if blank, this is not a choosable code
+    #   :display value="[string]"/><!-- ?? 0..1 User display for the concept
+    #   :contains><!-- 0..* Content as for ValueSet.expansion.contains Codes contained in this concept </contains>
+    #  </contains>
+    # </expansion>
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
   end
 end
-alias :gen_valueSet :gen_value_set
+alias :gen_valueSet :gen_valueset
 
 def gen_category(number = 1..1)
   gen(3) do
@@ -145,24 +215,6 @@ def gen_contact(number = 1..1)
     res[:value] = gen(0..1) { Faker::Lorem.sentence } # The actual contact details
     res[:use] = gen_code(0..1, restrictions: %w(home work temp old mobile)) # purpose of this address
     res[:period] = gen_period(0..1) # Period Time period when the contact was/is in use
-
-    res.delete_if { |_, v| !v }
-    res unless res.empty?
-  end
-end
-
-def gen_period(number = 1..1)
-  datetime_min = Time.new(2000)
-  datetime_max = Time.new(2010)
-  rand_datetime = -> do
-    Time.at((datetime_max.to_f - datetime_min.to_f) * rand + datetime_min.to_f)
-  end
-
-  gen(number) do
-    res = {}
-
-    res[:start] = gen(0..1) { rand_datetime.call } # Starting time with inclusive boundary
-    res[:end]   = gen(0..1) { rand_datetime.call } # End time with inclusive boundary, if not ongoing
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
