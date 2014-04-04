@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 require 'faker'
 
 def gen(number, &block)
   n = if number.is_a?(Range)
-        number.last < Float::INFINITY ? number.last : 9
+        number.last < Float::INFINITY ? number.last : 3
       else
         number
       end
@@ -12,7 +13,7 @@ def gen(number, &block)
   res.empty? ? nil : res
 end
 
-def gen_identifier(number = 3)
+def gen_identifier(number = 1..1)
   tpls = [
     { use: 'official', label: 'BSN', system: 'urn:oid:2.16.840.1.113883.2.4.6.3', value: '123123' },
     { use: "official", label:"SSN", system:"urn:oid:2.16.840.1.113883.2.4.6.7", value:"123456789" }]
@@ -22,8 +23,17 @@ def gen_identifier(number = 3)
   end
 end
 
-def gen_active(number = 1..1)
+def gen_boolean(number = 1..1)
   [true, false].sample
+end
+alias :gen_active :gen_boolean
+
+def gen_uri(number = 1..1)
+  gen(number) { Faker::Internet.url }
+end
+
+def gen_uri(number = 1..1)
+  gen(number) { Faker::Internet.word }
 end
 
 def gen_codeable_concept(number = 1..1)
@@ -31,12 +41,36 @@ def gen_codeable_concept(number = 1..1)
   # object :coding, (0..Float::INFINITY) do
   #   # Coding Code defined by a terminology system
   # end
-  gen(0..1) do
-    res[:text] = Faker::Lorem.sentence # Plain text representation of the concept
-  end
+  res[:text] = gen(0..1) { Faker::Lorem.sentence } # Plain text representation of the concept
 
   res unless res.empty?
 end
+
+def gen_coding(number = 1..1)
+  gen(number) do
+    res = {}
+    res[:system] = gen_uri(0..1) # Identity of the terminology system
+    res[:version] = gen_string(0..1) # Version of the system - if relevant
+    res[:code] = gen_code(0..1) # Symbol in syntax defined by the system
+    res[:display] = gen_string(0..1) # Representation defined by the system
+    res[:primary] = gen_boolean(0..1) # If this code was chosen directly by the user
+    res[:valueSet] = gen_valueSet(0..1) # Set this coding was chosen from
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+
+def gen_value_set(number = 1..1)
+  gen(number) do
+    res = {}
+    res[:identifier] = gen_string(0..1) # Logical id to reference this value set
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+alias :gen_valueSet :gen_value_set
 
 def gen_category(number = 1..1)
   gen(3) do
