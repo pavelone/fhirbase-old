@@ -13,6 +13,11 @@ def gen(number, &block)
   res.empty? ? nil : res
 end
 
+def gen_maritalStatus(number = 1..1) end
+def gen_photo(number = 1..1) end
+def gen_communication(number = 1..1) end
+def gen_careProvider(number = 1..1) end
+
 def gen_identifier(number = 1..1)
   tpls = [
     { use: 'official', label: 'BSN', system: 'urn:oid:2.16.840.1.113883.2.4.6.3', value: '123123' },
@@ -50,6 +55,7 @@ def gen_datetime(number = 1..1)
 end
 alias :gen_date :gen_datetime
 alias :gen_dateTime :gen_datetime
+alias :gen_instant :gen_datetime
 
 def gen_period(number = 1..1)
   gen(number) do
@@ -99,42 +105,42 @@ def gen_valueset(number = 1..1)
     res[:experimental] = gen_boolean(0..1) # If for testing purposes, not real usage
     res[:extensible] = gen_boolean(0..1) # Whether this is intended to be used with an extensible binding
     res[:date] = gen_date(0..1) # Date for given status
-    # <define>  <!-- ?? 0..1 When value set defines its own codes
-    #  :system value="[uri]"/><!-- 1..1 URI to identify the code system
-    #  :version value="[string]"/><!-- 0..1 Version of this system
-    #  :caseSensitive value="[boolean]"/><!-- 0..1 If code comparison is case sensitive
-    #  :concept>  <!-- 0..* Concepts in the code system
-    #   :code value="[code]"/><!-- 1..1 Code that identifies concept
-    #   :abstract value="[boolean]"/><!-- 0..1 If this code is not for use as a real concept
-    #   :display value="[string]"/><!-- 0..1 Text to Display to the user
-    #   :definition value="[string]"/><!-- 0..1 Formal Definition
-    #   :concept><!-- 0..* Content as for ValueSet.define.concept Child Concepts (is-a / contains) </concept>
-    #  </concept>
-    # </define>
-    # <compose>  <!-- ?? 0..1 When value set includes codes from elsewhere
-    #  :import value="[uri]"/><!-- ?? 0..* Import the contents of another value set
-    #  :include>  <!-- ?? 0..* Include one or more codes from a code system
-    #   :system value="[uri]"/><!-- 1..1 The system the codes come from
-    #   :version value="[string]"/><!-- 0..1 Specific version of the code system referred to
-    #   :code value="[code]"/><!-- 0..* Code or concept from system
-    #   :filter>  <!-- 0..* Select codes/concepts by their properties (including relationships)
-    #    :property value="[code]"/><!-- 1..1 A property defined by the code system
-    #    :op value="[code]"/><!-- 1..1 = | is-a | is-not-a | regex | in | not in
-    #    :value value="[code]"/><!-- 1..1 Code from the system, or regex criteria
-    #   </filter>
-    #  </include>
-    #  :exclude><!-- ?? 0..* Content as for ValueSet.compose.include Explicitly exclude codes </exclude>
-    # </compose>
-    # :expansion>  <!-- ?? 0..1 When value set is an expansion
-    #  :identifier><!-- 0..1 Identifier Uniquely identifies this expansion </identifier>
-    #  :timestamp value="[instant]"/><!-- 1..1 Time valueset expansion happened
-    #  :contains>  <!-- 0..* Codes in the value set
-    #   :system value="[uri]"/><!-- 0..1 System value for the code
-    #   :code value="[code]"/><!-- ?? 0..1 Code - if blank, this is not a choosable code
-    #   :display value="[string]"/><!-- ?? 0..1 User display for the concept
-    #   :contains><!-- 0..* Content as for ValueSet.expansion.contains Codes contained in this concept </contains>
-    #  </contains>
-    # </expansion>
+    res[:define] = gen(0..1) do # When value set defines its own codes
+      res[:system] = gen_uri(1..1) # URI to identify the code system
+      res[:version] = gen_string(0..1) # Version of this system
+      res[:caseSensitive] = gen_boolean(0..1) # If code comparison is case sensitive
+      res[:concept] = gen(0..Float::INFINITY) do # Concepts in the code system
+        res[:code] = gen_code(1..1) # Code that identifies concept
+        res[:abstract] = gen_boolean(0..1) # If this code is not for use as a real concept
+        res[:display] = gen_string(0..1) # Text to Display to the user
+        res[:definition] = gen_text(0..1) # Formal Definition
+        # <concept><!-- 0..* Content as for ValueSet.define.concept Child Concepts (is-a / contains) </concept>
+      end
+    end
+    res[:compose] = gen(0..1) do # When value set includes codes from elsewhere
+      res[:import] = gen_uri{0..Float::INFINITY} # Import the contents of another value set
+      res[:include] = gen(0..Float::INFINITY) do # Include one or more codes from a code system
+        res[:system] = gen_uri(1..1) # The system the codes come from
+        res[:version] = gen_string(0..1) # Specific version of the code system referred to
+        res[:code] = gen_code(0..Float::INFINITY) # Code or concept from system
+        res[:filter] = gen(0..Float::INFINITY) do # Select codes/concepts by their properties (including relationships)
+          res[:property] = gen_code(1..1) # A property defined by the code system
+          res[:op] = gen_code(1..1, restrictions: %w(is-a is-not-a regex in not in))
+          res[:value] = gen_code(1..1) # Code from the system, or regex criteria
+        end
+      end
+      # <exclude><!-- ?? 0..Float::INFINITY Content as for ValueSet.compose.include Explicitly exclude codes </exclude>
+    end
+    res[:expansion] = gen(0..1) do # When value set is an expansion
+      res[:identifier] = gen_identifier(0..1) # Identifier Uniquely identifies this expansion </identifier>
+      res[:timestamp] = gen_instant(1..1) # Time valueset expansion happened
+      res[:contains] = gen(0..Float::INFINITY) do # Codes in the value set
+        res[:system] = gen_uri(0..1) # System value for the code
+        res[:code] = gen_code(0..1) # Code - if blank, this is not a choosable code
+        res[:display] = gen_string(0..1) # User display for the concept
+        # <contains><!-- 0..Float::INFINITY Content as for ValueSet.expansion.contains Codes contained in this concept </contains>
+      end
+    end
 
     res.delete_if { |_, v| !v }
     res unless res.empty?
@@ -268,11 +274,6 @@ def gen_position(number = 1..1)
     res unless res.empty?
   end
 end
-
-def gen_maritalStatus(number = 1..1) end
-def gen_photo(number = 1..1) end
-def gen_communication(number = 1..1) end
-def gen_careProvider(number = 1..1) end
 
 def gen_organization(number = 1..1)
   gen(number) do
