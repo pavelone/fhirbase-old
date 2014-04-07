@@ -2,21 +2,19 @@
 require 'faker'
 
 def gen(number, &block)
-  n = if number.is_a?(Range)
-        number.last < Float::INFINITY ? number.last : 3
+  max = if number.is_a?(Range)
+        number.last < Float::INFINITY ? number.last : 9
       else
         number
       end
   min = number.is_a?(Range) ? number.first : 0
 
-  res = (rand(n + 1) + min).times.map(&block).compact
-  res.empty? ? nil : res
+  res = (rand((max - min) + 1) + min).times.map(&block).compact
+  return if res.empty?
+  max == 1 ? res.first : res
 end
 
 def gen_maritalStatus(number = 1..1) end
-def gen_photo(number = 1..1) end
-def gen_communication(number = 1..1) end
-def gen_careProvider(number = 1..1) end
 
 def gen_identifier(number = 1..1)
   tpls = [
@@ -29,9 +27,13 @@ def gen_identifier(number = 1..1)
 end
 
 def gen_boolean(number = 1..1)
-  [true, false].sample
+  gen(number) { [true, false].sample }
 end
 alias :gen_active :gen_boolean
+
+def gen_integer(number = 1..1)
+  gen(number) { rand(100) }
+end
 
 def gen_uri(number = 1..1)
   gen(number) { Faker::Internet.url }
@@ -69,12 +71,16 @@ def gen_period(number = 1..1)
 end
 
 def gen_codeable_concept(number = 1..1)
-  res = {}
-  res[:coding] = gen_coding(0..Float::INFINITY) # Coding Code defined by a terminology system
-  res[:text] = gen(0..1) { Faker::Lorem.sentence } # Plain text representation of the concept
+  gen(number) do
+    res = {}
+    res[:coding] = gen_coding(0..Float::INFINITY) # Coding Code defined by a terminology system
+    res[:text] = gen(0..1) { Faker::Lorem.sentence } # Plain text representation of the concept
 
-  res unless res.empty?
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
 end
+alias :gen_communication :gen_codeable_concept
 
 def gen_coding(number = 1..1)
   gen(number) do
@@ -168,7 +174,7 @@ end
 alias :gen_name :gen_HumanName
 
 def gen_telecom(number = 1..1)
-  gen(2) do
+  gen(number) do
     [
       {
         system: %w(phone fax).sample,
@@ -185,7 +191,7 @@ def gen_telecom(number = 1..1)
 end
 
 def gen_gender(number)
-  gen(1) do
+  gen(number) do
     {
       coding: [{ system: 'http://hl7.org/fhir/v3/AdministrativeGender', code: %w(M F).sample, display: %w(Male Female).sample }] # bug
     }
@@ -193,11 +199,11 @@ def gen_gender(number)
 end
 
 def gen_birthDate(number = 1..1)
-  Time.at(rand * Time.now.to_i)
+  gen(number) { Time.at(rand * Time.now.to_i) }
 end
 
 def gen_deceasedBoolean(number = 1..1)
-  rand % 100 == 0
+  gen(number) { rand % 100 == 0 }
 end
 
 def gen_address(number = 2)
@@ -241,6 +247,23 @@ def gen_code(number = 1, opts = {})
   end
 end
 
+def gen_attachment(number = 1..1)
+  gen(number) do
+    res = {}
+    res[:contentType] = gen_code(1..1) # Mime type of the content, with charset etc.
+    res[:language] = gen_code(0..1) # Human language of the content (BCP-47)
+    # <data value="[base64Binary]"/><!-- 0..1 Data inline, base64ed -->
+    res[:url] = gen_uri(0..1) # Uri where the data can be found
+    res[:size] = gen_integer(0..1) # Number of bytes of content (if url provided)
+    # <hash value="[base64Binary]"/><!-- 0..1 Hash of the data (sha-1, base64ed ) -->
+    res[:title] = gen_string(0..1) # Label to display in place of the data
+
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
+  end
+end
+alias :gen_photo :gen_attachment
+
 def gen_location(number = 1..1)
   gen(number) do
     res = {}
@@ -252,7 +275,8 @@ def gen_location(number = 1..1)
     res[:address] = gen_address(0..1) # Physical location
     res[:physicalType] = gen_codeable_concept(0..1) # Physical form of the location
     res[:position] = gen_position(0..1) # The absolute geographic location
-    res[:managingOrganization] = gen_organization(0..1) # The organization that is responsible for the provisioning and upkeep of the location
+    # SystemStackError: stack level too deep
+    # res[:managingOrganization] = gen_organization(0..1) # The organization that is responsible for the provisioning and upkeep of the location
     res[:status] = gen_code(0..1, restrictions: %w(active suspended inactive))
     # SystemStackError: stack level too deep
     # res[:partOf] = gen_location(0..1) # Another Location which this Location is physically part of
@@ -302,6 +326,7 @@ def gen_organization(number = 1..1)
   end
 end
 alias :gen_managingOrganization :gen_organization
+alias :gen_careProvider :gen_organization
 
 def gen_patient(number)
   gen(number) do
@@ -328,6 +353,8 @@ def gen_patient(number)
       res.delete_if { |k, v| v.nil? }
     end
 
+    res.delete_if { |_, v| !v }
+    res unless res.empty?
     res
   end
 end
