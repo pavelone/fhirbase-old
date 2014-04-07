@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 require 'faker'
+require 'json'
 
 def gen(number, &block)
   max = if number.is_a?(Range)
@@ -7,7 +8,7 @@ def gen(number, &block)
       else
         number
       end
-  min = number.is_a?(Range) ? number.first : 0
+  min = number.is_a?(Range) ? number.first : number
 
   res = (rand((max - min) + 1) + min).times.map(&block).compact
   return if res.empty?
@@ -357,3 +358,5 @@ def gen_patient(number)
     res
   end
 end
+
+# puts JSON.pretty_generate(gen_patient(2))
