@@ -14,8 +14,6 @@ def gen(number, &block)
   max == 1 ? res.first : res
 end
 
-def gen_maritalStatus(number = 1..1) end
-
 def gen_identifier(number = 1..1)
   tpls = [
     { use: 'official', label: 'BSN', system: 'urn:oid:2.16.840.1.113883.2.4.6.3', value: '123123' },
@@ -81,6 +79,7 @@ def gen_codeable_concept(number = 1..1)
   end
 end
 alias :gen_communication :gen_codeable_concept
+alias :gen_maritalStatus :gen_codeable_concept
 
 def gen_coding(number = 1..1)
   gen(number) do
@@ -334,7 +333,7 @@ def gen_patient(number)
 
     {
       identifier:           0..Float::INFINITY,
-      category:             0, #wtf?
+      category:             0..1, #wtf?
       name:                 0..Float::INFINITY,
       telecom:              0..Float::INFINITY,
       gender:               0..1,
