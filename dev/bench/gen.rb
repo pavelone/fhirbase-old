@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 require 'faker'
 require 'json'
+require 'pmap'
 
-def gen(number, &block)
+def gen(number, force_array = false, &block)
   max = if number.is_a?(Range)
-        number.last < Float::INFINITY ? number.last : 9
+        number.last < Float::INFINITY ? number.last : 3
       else
         number
       end
@@ -12,7 +12,8 @@ def gen(number, &block)
 
   res = (rand((max - min) + 1) + min).times.map(&block).compact
   return if res.empty?
-  max == 1 ? res.first : res
+  #$stderr.puts "#{number}, #{res.inspect}" if max == 1
+  max > 1 || force_array ? res : res.first
 end
 
 def gen_identifier(number = 1..1)
@@ -98,7 +99,7 @@ def gen_coding(number = 1..1)
 end
 
 def gen_valueset(number = 1..1)
-  gen(number) do
+  gen(number, true) do
     res = {}
     res[:identifier] = gen_string(0..1) # Logical id to reference this value set
     res[:version] = gen_string(0..1) # Logical id for this version of the value set
@@ -167,7 +168,7 @@ def gen_HumanName(number = 1..1)
       text: Faker::Name.name,
       family: gen(2) { Faker::Name.last_name },
       given: gen(2) { Faker::Name.first_name },
-      prefix: gen(1) { Faker::Name.prefix }
+      prefix: gen(1, true) { Faker::Name.prefix }
     }
   end
 end
@@ -203,7 +204,7 @@ def gen_birthDate(number = 1..1)
 end
 
 def gen_deceasedBoolean(number = 1..1)
-  gen(number) { rand % 100 == 0 }
+  rand % 100 == 0
 end
 
 def gen_address(number = 2)
@@ -328,8 +329,27 @@ end
 alias :gen_managingOrganization :gen_organization
 alias :gen_careProvider :gen_organization
 
+class Pager
+  def initialize(number, ppm = true)
+    @counter = 0
+    @point = ppm ? number / 1000 : number / 100
+    @line = @point * 20
+  end
+
+  def show
+    @counter += 1
+    if (@counter % @line).zero?
+      $stderr.puts "  #{@counter}"
+    elsif (@counter % @point).zero?
+      $stderr.print '.'
+    end
+  end
+end
+
 def gen_patient(number)
-  gen(number) do
+  #pager = Pager.new(number)
+  number.times.pmap do
+    #pager.show
     res = { resourceType: 'Patient' }
 
     {
@@ -342,7 +362,7 @@ def gen_patient(number)
       deceasedBoolean:      0..1,
       address:              0..Float::INFINITY,
       maritalStatus:        0..1,
-      photo:                0..Float::INFINITY,
+      #photo:                0..Float::INFINITY,
       contact:              0..Float::INFINITY,
       communication:        0..Float::INFINITY,
       careProvider:         0..Float::INFINITY,
@@ -350,13 +370,17 @@ def gen_patient(number)
       active:               0..1
     }.each do |name, number|
       res[name] = send("gen_#{name}", number)
-      res.delete_if { |k, v| v.nil? }
     end
 
     res.delete_if { |_, v| !v }
-    res unless res.empty?
-    res
+    unless res.empty?
+      "SELECT fhir.insert_resource($DATA$#{JSON.pretty_generate(res)}$DATA$::json);"
+    end
   end
 end
 
-# puts JSON.pretty_generate(gen_patient(2))
+gen_patient(ARGV[0].to_i).peach do |pt|
+  puts pt
+end
+#puts JSON.pretty_generate(gen_patient(1000))
+
