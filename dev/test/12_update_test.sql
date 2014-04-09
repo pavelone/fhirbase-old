@@ -13,7 +13,7 @@ SELECT fhir.insert_resource(:'pt_json'::json) AS logical_id \gset
 SELECT _version_id as version_id FROM fhir.patient WHERE _logical_id = :'logical_id' \gset
 
 SELECT is(COUNT(*)::integer, 1, 'patient was inserted')
-       FROM fhir.view_patient WHERE _logical_id = :'logical_id';
+       FROM fhir.patient WHERE _logical_id = :'logical_id';
 
 SELECT is(
        (SELECT text::varchar

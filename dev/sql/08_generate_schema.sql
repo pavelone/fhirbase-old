@@ -32,22 +32,14 @@ CREATE TABLE fhir.resource (
   _logical_id UUID NOT NULL,
   _last_modified_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
   _state fhir.resource_state NOT NULL DEFAULT 'current',
-  _container_id UUID,
-  _type VARCHAR NOT NULL,
-  _unknown_attributes json,
-  _index integer,
+
   resource_type varchar,
   language VARCHAR,
-  id VARCHAR
+  data JSON
 );
 
 CREATE TABLE fhir.resource_component (
-  _version_id UUID NOT NULL,
-  _id uuid NOT NULL,
-  _parent_id UUID,
-  _type VARCHAR NOT NULL,
-  _unknown_attributes json,
-  _index integer
+  _version_id UUID NOT NULL
 );
 
 CREATE TABLE fhir.tag (
@@ -98,25 +90,16 @@ CREATE VIEW meta.resources_ddl AS (
 SELECT
   ARRAY[
        'CREATE TABLE'
-    || ' fhir."' || table_name  || '"'
+   || ' fhir."' || table_name  || '"'
     || '(' || array_to_string(columns, ',') || ')'
     || ' INHERITS (fhir.' || base_table || ')'
-  , 'ALTER TABLE fhir.' || table_name || ' ALTER COLUMN _type SET DEFAULT $$' || table_name || '$$'
-  , 'ALTER TABLE fhir.' || table_name || ' ADD PRIMARY KEY(' || CASE WHEN base_table = 'resource' THEN '_version_id' ELSE '_id' END || ')'
   ,CASE
    WHEN base_table = 'resource' THEN
-        'CREATE INDEX ON fhir.' || table_name || ' (_container_id);'
-     || 'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_logical_id) WHERE _state = ''current'''
+     'ALTER TABLE fhir.' || table_name || ' ADD PRIMARY KEY (_version_id);' ||
+     'CREATE UNIQUE INDEX ON fhir.' || table_name || '(_logical_id) WHERE _state = ''current'''
    ELSE
         'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_version_id) REFERENCES fhir.' || resource_table_name || ' (_version_id) ON DELETE CASCADE DEFERRABLE;'
      || 'CREATE INDEX ON fhir.' || table_name || ' (_version_id);'
-     || 'CREATE INDEX ON fhir.' || table_name || ' (_parent_id);'
-     || CASE
-        WHEN array_length(path, 1) > 2 THEN
-             'ALTER TABLE fhir.' || table_name || ' ADD FOREIGN KEY (_parent_id) REFERENCES fhir.' || parent_table_name || ' (_id) ON DELETE CASCADE DEFERRABLE;'
-          || 'ALTER TABLE fhir.' || table_name || ' ALTER COLUMN _parent_id SET NOT NULL;'
-        ELSE ''
-        END
    END
   ] AS ddls
   FROM meta.resource_tables
