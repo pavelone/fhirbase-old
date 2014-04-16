@@ -7,24 +7,38 @@ BEGIN;
 \set pt_json `cat $FHIRBASE_HOME/test/fixtures/patient.json`
 \set new_pt_json `cat $FHIRBASE_HOME/test/fixtures/updated_patient.json`
 
-SELECT plan(4);
+SELECT plan(6);
 
-SELECT fhir.insert_resource(:'pt_json'::json) AS resource_id \gset
+SELECT fhir.insert_resource(:'pt_json'::json) AS logical_id \gset
+SELECT _version_id as version_id FROM fhir.patient WHERE _logical_id = :'logical_id' \gset
 
 SELECT is(COUNT(*)::integer, 1, 'patient was inserted')
-       FROM fhir.view_patient WHERE _id = :'resource_id';
+       FROM fhir.patient WHERE _logical_id = :'logical_id';
 
 SELECT is(
        (SELECT text::varchar
-       FROM fhir.patient_name WHERE resource_id = :'resource_id'),
+       FROM fhir.patient_name WHERE _version_id = :'version_id'),
        'Roel'::varchar,
        'patient data was placed in correct tables');
 
-SELECT fhir.update_resource(:'resource_id', :'new_pt_json'::json);
+SELECT fhir.update_resource(:'logical_id', :'new_pt_json'::json);
+SELECT _version_id as new_version_id FROM fhir.patient WHERE _state = 'current' and _logical_id = :'logical_id' \gset
+
+SELECT is((
+    SELECT count(1)::integer
+    FROM fhir.patient
+    WHERE _version_id = :'version_id' and _state = 'archived'),
+  1, 'old patient record marked as archived');
 
 SELECT is(
        (SELECT text::varchar
-       FROM fhir.patient_name WHERE resource_id = :'resource_id'),
+       FROM fhir.patient_name WHERE _version_id = :'version_id'),
+       'Roel'::varchar,
+       'old patient data is the same');
+
+SELECT is(
+       (SELECT text::varchar
+       FROM fhir.patient_name WHERE _version_id = :'new_version_id'),
        'Gavrila'::varchar,
        'patient data was correctly updated');
 

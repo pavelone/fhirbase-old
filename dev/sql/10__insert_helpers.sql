@@ -15,6 +15,7 @@ FUNCTION meta.eval_insert(str text)
 RETURNS text AS
 $$
   BEGIN
+    --RAISE NOTICE E'eval_insert\n%', str;
     EXECUTE str;
     RETURN 'inserted';
   END;
@@ -41,9 +42,10 @@ CREATE INDEX fhir_columns_column_name_idx ON fhir_columns
 CREATE INDEX fhir_columns_table_name ON fhir_columns
 (table_name);
 
+
 -- build insert string from json and table meta info
 CREATE OR REPLACE
-FUNCTION build_insert_statment(_table_name text, _obj json, _id text, _parent_id text, _resource_id text, _container_id text)
+FUNCTION build_insert_statment(_table_name text, _obj json, _logical_id text, _version_id text)
 RETURNS text
 AS $$
 
@@ -65,21 +67,22 @@ WITH vals AS ( -- split json into key-value filter only columns
           END AS value
       FROM vals
       UNION
-        SELECT '_id' AS key, quote_literal(_id) AS value
+        SELECT '_logical_id' AS key, quote_literal(_logical_id) AS value
+        WHERE _logical_id IS NOT NULL
       UNION
-        SELECT 'parent_id' AS key, quote_literal(_parent_id) AS value
-        WHERE _parent_id IS NOT NULL
-      UNION
-        SELECT 'container_id' AS key, quote_literal(_container_id) AS value
-        WHERE _container_id IS NOT NULL
-      UNION
-        SELECT 'resource_id' AS key, quote_literal(_resource_id) AS value
-        WHERE _parent_id IS NOT NULL AND _resource_id <> _id
+        SELECT '_version_id' AS key, quote_literal(_version_id) AS value
 )
 select 'insert into '
    || 'fhir.' || _table_name
-   || ' (' || string_agg(key, ',') || ') '
+   || ' (' || string_agg(quote_ident(key), ',') || ') '
    || ' VALUES (' || string_agg(value, ',') || ')'
    FROM key_vals b;
 $$ LANGUAGE sql VOLATILE;
 --}}}
+
+CREATE OR REPLACE FUNCTION build_tags(tags JSON, version_id UUID, logical_id UUID) RETURNS VOID LANGUAGE SQL AS $$
+  INSERT INTO fhir.tag (_version_id, _logical_id, scheme, term, label)
+    SELECT
+      build_tags.version_id, build_tags.logical_id, scheme, term, label
+    FROM  json_populate_recordset(null::fhir.tag, tags);
+$$;

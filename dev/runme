@@ -130,6 +130,11 @@ case "$CMD" in
     "install" )
         install_cmd $2 install.sql
         ;;
+
+    "reinstall" )
+        recreate_db $2
+        install_cmd $2 install.sql
+        ;;
     "build" )
         build_cmd
         ;;

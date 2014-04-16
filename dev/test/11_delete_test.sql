@@ -6,43 +6,38 @@ BEGIN;
 
 \set pt_json `cat $FHIRBASE_HOME/test/fixtures/patient.json`
 
-SELECT plan(8);
+SELECT plan(4);
 
-select fhir.insert_resource(:'pt_json'::json) as resource_id \gset
+select fhir.insert_resource(:'pt_json'::json) as logical_id \gset
 
-SELECT :'resource_id';
+SELECT :'logical_id';
 
-SELECT is(count(*)::integer, 1, 'insert patient')
-       FROM fhir.patient;
+SELECT is((
+    SELECT count(*)::integer
+    FROM fhir.patient p
+    WHERE p._state = 'current' and p._logical_id = :'logical_id'),
+  1, 'insert current patient record');
 
-SELECT is(count(*)::integer, 1, 'insert patient')
-       FROM fhir.patient_name;
+SELECT is((
+    SELECT count(*)::integer
+    FROM fhir.patient_name n
+    JOIN fhir.patient p on p._version_id = n._version_id
+    WHERE p._state = 'current' and p._logical_id = :'logical_id'),
+  1, 'insert current patient name record');
 
-select fhir.delete_resource(:'resource_id');
+select fhir.delete_resource(:'logical_id');
 
-SELECT is(count(*)::integer, 0, 'delete patient')
-       FROM fhir.patient;
+SELECT is((
+    SELECT count(*)::integer
+    FROM fhir.patient p
+    WHERE p._state = 'current' and p._logical_id = :'logical_id'),
+  0, 'leave no current patient record');
 
-SELECT is(count(*)::integer, 0, 'delete patient')
-       FROM fhir.patient_name;
-
--- regression test
-
-select fhir.insert_resource(:'pt_json'::json) as resource_id \gset
-
-SELECT is(count(*)::integer, 1, 'delete patient')
-       FROM fhir.patient;
-
-SELECT is(count(*)::integer, 1, 'insert patient')
-       FROM fhir.patient_name;
-
-delete from fhir.patient_name;
-
-SELECT is(count(*)::integer, 1, 'delete patient')
-       FROM fhir.patient;
-
-SELECT is(count(*)::integer, 0, 'delete patient')
-       FROM fhir.patient_name;
+SELECT is((
+    SELECT count(*)::integer
+    FROM fhir.patient p
+    WHERE p._state = 'deleted' and p._logical_id = :'logical_id'),
+  1, 'mark patient record as deleted');
 
 SELECT * FROM finish();
 ROLLBACK;
