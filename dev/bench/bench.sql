@@ -7,7 +7,7 @@
 -- мы хотим знать, насколько замедляют выборку жсона контейнеды
 
 \set pt_json `cat ./data/patient.json`
-\set pt_num 10000
+\set pt_num 1000
 
 CREATE OR REPLACE FUNCTION bench_run(pt_num integer, pt_json text)
 RETURNS void
