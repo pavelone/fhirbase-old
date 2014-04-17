@@ -121,9 +121,9 @@ $BODY$
 
     EXECUTE fhir.eval_template($SQL$
       SELECT _logical_id
-      FROM fhir.{{resource}}
+      FROM fhir.{{table_name}}
       WHERE _version_id = $1;
-      $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
+      $SQL$, 'table_name', fhir.table_name(array[_resource->>'resourceType']::varchar[]))
     INTO logical_id USING version_id;
 
     PERFORM build_tags(_resource->'category', version_id, logical_id);
