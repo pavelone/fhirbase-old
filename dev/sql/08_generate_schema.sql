@@ -39,7 +39,9 @@ CREATE TABLE fhir.resource (
 );
 
 CREATE TABLE fhir.resource_component (
-  _version_id UUID NOT NULL
+  _id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  _version_id UUID NOT NULL,
+  _parent_id UUID
 );
 
 CREATE TABLE fhir.tag (
