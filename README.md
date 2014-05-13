@@ -352,6 +352,14 @@ TODO: we should think about versioning!
 # Install postgresql-9.3 and postgresql-contrib
 # if you use debian linux or ubuntu see dev/apt.postgresql.org.sh
 
+# Be sure that SUPERUSER "postgres" is exists
+psql -d postgres -e 'CREATE USER postgres SUPERUSER;'
+
+# pgtap extension is required. You could install it using your favorite packet manager such as homebrew:
+brew install pgtap
+# Official guide
+http://pgtap.org/documentation.html#installation
+
 # Create database
 psql -d postgres -e 'create database mydb'`
 
