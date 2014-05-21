@@ -16208,7 +16208,7 @@ CREATE FUNCTION insert_resource(_resource json, _logical_id uuid DEFAULT NULL::u
       $SQL$, 'resource', fhir.underscore(_resource->>'resourceType'))
     INTO logical_id USING version_id;
 
-    PERFORM build_tags(_resource->'category', version_id, logical_id);
+    -- PERFORM build_tags(_resource->'category', version_id, logical_id);
     EXECUTE fhir.eval_template($$
         UPDATE fhir.{{table_name}} SET data = {{data}}::json WHERE _version_id = {{version_id}}::uuid
       $$,
