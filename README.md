@@ -11,12 +11,6 @@ Sponsored by:
 
 ![choice-hs.com](http://choice-hs.com/Images/Shared/Choice-HSLogo.png)
 
-## Service
-
-> All premium services from developers of Fhirbase projects 
-> should be requested from Choice Hospital Systems (http://Choice-HS.com)
-
-
 ## Live Demo
 
 Here is an [interactive demo](http://try-fhirbase.hospital-systems.com)
